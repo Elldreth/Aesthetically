@@ -32,6 +32,7 @@
 <body>
   <div id="top">
     <span class="badge" id="status">no scan yet</span>
+    <select id="scan-picker" aria-label="Past scans" title="Reopen a past scan" hidden></select>
     <span id="scan-path"></span>
     <button class="btn" id="b-more" hidden>Load more</button>
     <div id="export-group" hidden>
@@ -51,50 +52,49 @@ initNav(null);
 helpOverlay([['?', 'Toggle this help']]);
 const $ = id => document.getElementById(id);
 const LIMIT = 60;
-let shown = 0, total = 0, jobId = null;
+let shown = 0, total = 0, scanId = null, viewing = null;
 
 function setStatus(kind, text) {
   const b = $('status');
   b.className = 'badge ' + kind; b.textContent = text;
 }
 
-async function poll() {
-  const s = await api('/api/scan/status');
-  $('scan-path').textContent = s.path || '';
-  if (s.state === 'done') {
-    setStatus('ok', `${s.count} images scored by ${s.model}`);
-    $('export-group').hidden = false;
-    if (jobId !== s.job_id) {           // results belong to a different scan — reset
-      jobId = s.job_id; shown = 0; $('grid').textContent = '';
-    }
-    if (!shown) loadMore();
-  } else if (s.state === 'failed') {
-    setStatus('fail', 'scan failed — see server log');
-  } else if (s.state === 'scoring' || s.state === 'starting') {
-    setStatus('busy', `scoring… ${s.done || 0}/${s.total || '?'}`);
-    setTimeout(poll, 1500);
-  } else {
-    const empty = document.createElement('div');
-    empty.className = 'empty-state';
-    const h = document.createElement('h2');
-    h.textContent = 'No scan yet';
-    const p = document.createElement('p');
-    p.textContent = 'Use "Score folder" in the header to predict your taste for any folder — nothing is added to your collection.';
-    empty.append(h, p);
-    $('grid').appendChild(empty);
+async function refreshPicker(selectId) {
+  const data = await api('/api/scans');
+  const pick = $('scan-picker');
+  pick.hidden = data.items.length < 1;
+  pick.textContent = '';
+  for (const s of data.items) {
+    const o = document.createElement('option');
+    o.value = s.id;
+    const folder = s.path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || s.path;
+    o.textContent = `${folder} · ${s.count} · #${s.id}`;
+    pick.appendChild(o);
   }
+  if (selectId != null) pick.value = selectId;
 }
 
+async function openScan(sid) {
+  viewing = sid; shown = 0; $('grid').textContent = '';
+  await loadMore();
+  const data = await lastResults;          // header info from the load
+  $('scan-path').textContent = data.path || '';
+  setStatus('ok', `${data.total} images · ${data.model || 'taste'}`);
+  $('export-group').hidden = data.total < 1;
+}
+
+let lastResults = Promise.resolve({});
 async function loadMore() {
-  const data = await api(`/api/scan/results?limit=${LIMIT}&offset=${shown}`);
-  total = data.total;
-  jobId = data.job_id;
+  const q = viewing != null ? `&scan_id=${viewing}` : '';
+  lastResults = api(`/api/scan/results?limit=${LIMIT}&offset=${shown}${q}`);
+  const data = await lastResults;
+  total = data.total; scanId = data.scan_id;
   for (const it of data.items) {
     const c = document.createElement('div');
     c.className = 'cell';
     const img = document.createElement('img');
     img.loading = 'lazy';
-    img.src = `/scan/img/${jobId}/${it.i}`;
+    img.src = `/scan/img/${scanId}/${it.i}`;
     img.alt = it.name;
     const sc = document.createElement('span');
     sc.className = 'score';
@@ -109,13 +109,40 @@ async function loadMore() {
   $('b-more').hidden = shown >= total;
 }
 
+async function poll() {
+  const s = await api('/api/scan/status');
+  if (s.state === 'scoring' || s.state === 'starting') {
+    $('scan-path').textContent = s.path || '';
+    setStatus('busy', `scoring… ${s.done || 0}/${s.total || '?'}`);
+    setTimeout(poll, 1500);
+    return;
+  }
+  if (s.state === 'failed') { setStatus('fail', 'scan failed — see server log'); return; }
+  // idle or done: show whichever scan is selected (default latest)
+  await refreshPicker(s.scan_id || null);
+  const data = await api('/api/scan/results');     // latest
+  if (!data.total) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+    const h = document.createElement('h2'); h.textContent = 'No scans yet';
+    const p = document.createElement('p');
+    p.textContent = 'Use "Score folder" in the header to predict your taste for any folder — nothing is added to your collection.';
+    empty.append(h, p); $('grid').appendChild(empty);
+    return;
+  }
+  await openScan(data.scan_id);
+  $('scan-picker').value = data.scan_id;
+}
+
+$('scan-picker').addEventListener('change', e => openScan(+e.target.value));
 $('b-more').addEventListener('click', loadMore);
 $('b-export').addEventListener('click', async () => {
   const out = $('exp-out').value.trim();
   if (!out) return;
   $('b-export').disabled = true;
   try {
-    const r = await api('/api/scan/export', {out, top: +$('exp-top').value, mode: $('exp-mode').value});
+    const r = await api('/api/scan/export',
+      {out, scan_id: viewing, top: +$('exp-top').value, mode: $('exp-mode').value});
     toast(`Exported ${r.exported} images to ${r.out}`);
   } catch (e) { toast('Export failed: ' + e.message); }
   $('b-export').disabled = false;

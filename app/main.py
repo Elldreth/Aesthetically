@@ -653,15 +653,18 @@ def select_status():
     return dict(_select_job)
 
 
-# ---- ephemeral folder scoring (nothing enters the collection) ----
+# ---- folder scoring (persisted, kept out of the training collection) ----
 
-# Each scan gets a monotonic job_id. Result images are served as
-# /scan/img/{job_id}/{index}; a request carrying a stale job_id is rejected
-# rather than silently serving an image from a *different* scan (the
-# results list is a single mutable global, and lazy-loaded thumbnails can
-# arrive after a new scan has replaced it).
-_scan_counter = __import__("itertools").count(1)
-_scan_job: dict = {"state": "idle", "job_id": 0}
+# Each scan is a row in `scans`; results live in `scan_items` and survive
+# restarts. Result thumbnails are served as /scan/img/{scan_id}/{rank} where
+# rank is the position in score-desc order — a stable, persistent address, so
+# a lingering page can never show a different scan's image.
+_scan_job: dict = {"state": "idle", "scan_id": 0}
+
+
+def _latest_scan_id(db) -> int | None:
+    row = db.execute("SELECT max(id) AS m FROM scans WHERE count IS NOT NULL").fetchone()
+    return row["m"]
 
 
 class ScanIn(BaseModel):
@@ -670,10 +673,11 @@ class ScanIn(BaseModel):
 
 @app.post("/api/scan")
 def scan_folder(body: ScanIn):
-    """Score a folder WITHOUT adding anything to the collection."""
+    """Score a folder WITHOUT adding it to the collection. Persisted as a scan."""
     import threading
 
-    from .scan import run_scan
+    from .scan import MODEL_NAME, run_scan
+    from .scorer import latest_head
 
     folder = _clean_path(body.path)
     if not folder.is_dir():
@@ -682,54 +686,86 @@ def scan_folder(body: ScanIn):
                             "to the server)")
     if _scan_job.get("state") in ("starting", "scoring"):
         raise HTTPException(409, "a scan is already running")
-    job_id = next(_scan_counter)
+    head = latest_head()
+    if head is None:
+        raise HTTPException(409, "no taste model yet — rate and train first")
+    with conn() as db:
+        cur = db.execute(
+            "INSERT INTO scans (path, taste_model, embed_model) VALUES (?, ?, ?)",
+            (str(folder), head["name"], MODEL_NAME),
+        )
+        scan_id = cur.lastrowid
     _scan_job.clear()
-    _scan_job.update(state="starting", path=str(folder), job_id=job_id)
+    _scan_job.update(state="starting", path=str(folder), scan_id=scan_id, done=0, total=0)
 
     def work():
         try:
-            run_scan(folder, _scan_job)
+            run_scan(folder, scan_id, _scan_job)
         except Exception:
             log.exception("scan failed")
             _scan_job["state"] = "failed"
 
     threading.Thread(target=work, daemon=True).start()
-    return {"started": True, "job_id": job_id}
+    return {"started": True, "scan_id": scan_id}
 
 
 @app.get("/api/scan/status")
 def scan_status():
-    out = {k: v for k, v in _scan_job.items() if k != "results"}
-    out["count"] = len(_scan_job.get("results", []))
-    return out
+    return dict(_scan_job)
+
+
+@app.get("/api/scans")
+def scans_list():
+    """Past scans, newest first — for the 'reopen a scan' picker."""
+    with conn() as db:
+        rows = db.execute(
+            "SELECT id, path, count, taste_model, created_at FROM scans"
+            " WHERE count IS NOT NULL ORDER BY id DESC LIMIT 100"
+        ).fetchall()
+    return {"items": [dict(r) for r in rows]}
 
 
 @app.get("/api/scan/results")
-def scan_results(limit: int = 60, offset: int = 0):
-    results = _scan_job.get("results", [])
-    return {"total": len(results), "model": _scan_job.get("model"),
-            "path": _scan_job.get("path"), "job_id": _scan_job.get("job_id", 0),
+def scan_results(scan_id: int | None = None, limit: int = 60, offset: int = 0):
+    with conn() as db:
+        sid = scan_id if scan_id is not None else _latest_scan_id(db)
+        if sid is None:
+            return {"total": 0, "scan_id": None, "path": None, "model": None, "items": []}
+        meta = db.execute("SELECT path, taste_model, count FROM scans WHERE id = ?",
+                          (sid,)).fetchone()
+        if meta is None:
+            raise HTTPException(404, "no such scan")
+        rows = db.execute(
+            "SELECT path, score FROM scan_items WHERE scan_id = ?"
+            " ORDER BY score DESC, path LIMIT ? OFFSET ?",
+            (sid, limit, offset),
+        ).fetchall()
+    return {"total": meta["count"] or 0, "scan_id": sid, "path": meta["path"],
+            "model": meta["taste_model"],
             "items": [{"i": offset + j, "score": r["score"], "name": Path(r["path"]).name}
-                      for j, r in enumerate(results[offset:offset + limit])]}
+                      for j, r in enumerate(rows)]}
 
 
-@app.get("/scan/img/{job_id}/{index}")
-def scan_image(job_id: int, index: int):
-    """Serve a scanned file's thumbnail by (job_id, index). A stale job_id
-    409s so a lingering page can never show another scan's image."""
-    if job_id != _scan_job.get("job_id"):
-        raise HTTPException(409, "these results are stale — rescan the folder")
-    results = _scan_job.get("results", [])
-    if not (0 <= index < len(results)):
+@app.get("/scan/img/{scan_id}/{rank}")
+def scan_image(scan_id: int, rank: int):
+    """Thumbnail of the rank-th image (score desc) in a persisted scan."""
+    with conn() as db:
+        row = db.execute(
+            "SELECT path FROM scan_items WHERE scan_id = ?"
+            " ORDER BY score DESC, path LIMIT 1 OFFSET ?",
+            (scan_id, rank),
+        ).fetchone()
+    if row is None or not os.path.isfile(row["path"]):
         raise HTTPException(404)
     try:
-        return FileResponse(_thumb_for(results[index]["path"]), media_type="image/webp")
+        return FileResponse(_thumb_for(row["path"]), media_type="image/webp")
     except DECODE_ERRORS:
         raise HTTPException(415, "source image is unreadable")
 
 
 class ScanExportIn(BaseModel):
     out: str = Field(min_length=1, max_length=500)
+    scan_id: int | None = None
     top: int = Field(default=50, ge=1, le=100_000)
     mode: str = Field(default="copy", pattern="^(copy|link|move)$")
 
@@ -738,14 +774,22 @@ class ScanExportIn(BaseModel):
 def scan_export(body: ScanExportIn):
     import shutil
 
-    results = _scan_job.get("results")
-    if not results:
-        raise HTTPException(409, "no completed scan to export from")
+    with conn() as db:
+        sid = body.scan_id if body.scan_id is not None else _latest_scan_id(db)
+        if sid is None:
+            raise HTTPException(409, "no completed scan to export from")
+        rows = db.execute(
+            "SELECT path, score FROM scan_items WHERE scan_id = ?"
+            " ORDER BY score DESC, path LIMIT ?",
+            (sid, body.top),
+        ).fetchall()
     out = _clean_path(body.out)
     out.mkdir(parents=True, exist_ok=True)
     n = 0
-    for r in results[: body.top]:
+    for r in rows:
         src = Path(r["path"])
+        if not src.is_file():
+            continue
         dst = out / f"{r['score']:.3f}_{src.name}"
         if dst.exists():
             continue
@@ -759,7 +803,7 @@ def scan_export(body: ScanExportIn):
         else:
             shutil.copy2(src, dst)
         n += 1
-    return {"exported": n, "out": str(out)}
+    return {"exported": n, "out": str(out), "scan_id": sid}
 
 
 class IngestIn(BaseModel):

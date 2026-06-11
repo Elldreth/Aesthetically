@@ -89,6 +89,36 @@ CREATE TABLE IF NOT EXISTS near_dups (
   PRIMARY KEY (image_id)
 );
 
+-- "Score folder" (ephemeral prediction) persistence — kept entirely separate
+-- from the training collection (images/labels). Embeddings are cached by file
+-- content hash so re-scoring a folder is instant and a new taste model can
+-- rescore from cache without re-running SigLIP.
+CREATE TABLE IF NOT EXISTS scan_cache (
+  sha256 TEXT NOT NULL,
+  model TEXT NOT NULL,                    -- embedding model
+  dim INTEGER NOT NULL,
+  vec BLOB NOT NULL,                      -- float32 little-endian
+  PRIMARY KEY (sha256, model)
+);
+
+-- A remembered scan of a folder; reopen or export it any time.
+CREATE TABLE IF NOT EXISTS scans (
+  id INTEGER PRIMARY KEY,
+  path TEXT NOT NULL,
+  taste_model TEXT,                       -- head that scored it
+  embed_model TEXT,
+  count INTEGER,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS scan_items (
+  scan_id INTEGER NOT NULL REFERENCES scans(id),
+  path TEXT NOT NULL,                     -- absolute file path on disk
+  sha256 TEXT,
+  score REAL,
+  PRIMARY KEY (scan_id, path)
+);
+CREATE INDEX IF NOT EXISTS idx_scan_items_score ON scan_items(scan_id, score DESC);
+
 -- Reproducible dataset snapshots: the query that defined them plus frozen membership.
 CREATE TABLE IF NOT EXISTS exports (
   id INTEGER PRIMARY KEY,
