@@ -480,6 +480,38 @@ def studio_eval_lora(body: EvalLoraIn):
         raise _studio_guard(e)
 
 
+@app.get("/api/studio/clusters")
+def studio_clusters(min_cluster_size: int = 10):
+    """Coherent style clusters among the liked images (for per-cluster LoRAs)."""
+    from .cluster import cluster_likes
+
+    try:
+        clusters = cluster_likes(min_cluster_size=min_cluster_size)
+    except Exception as e:
+        raise _studio_guard(e)
+    return {"clusters": [{k: c[k] for k in
+                          ("cluster", "size", "cohesion", "samples", "image_ids")}
+                         for c in clusters]}
+
+
+class TrainClusterIn(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    image_ids: list[int] = Field(min_length=10, max_length=400)
+    steps: int = Field(default=1200, ge=50, le=4000)
+    rank: int = Field(default=16, ge=4, le=64)
+
+
+@app.post("/api/studio/train_cluster_lora")
+def studio_train_cluster_lora(body: TrainClusterIn):
+    from . import studio
+
+    try:
+        return studio.submit_lora(body.name, body.image_ids, steps=body.steps,
+                                  rank=body.rank)
+    except Exception as e:
+        raise _studio_guard(e)
+
+
 @app.get("/api/studio/health")
 def studio_health():
     from .artifex_client import ArtifexClient

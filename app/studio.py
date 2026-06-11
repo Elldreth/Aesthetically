@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import random
 
 import numpy as np
@@ -124,18 +125,42 @@ def build_taste_dataset(k: int = 40) -> list[dict]:
     return [c for c in cands if c["id"] in keep]
 
 
-def train_taste_lora(name: str, k: int = 40, steps: int = 1200, rank: int = 16,
-                     lr: float = 1e-4, client: ArtifexClient | None = None) -> dict:
-    """Submit a style-LoRA job to Artifex from the curated taste dataset."""
-    client = _get_client(client)
-    dataset = build_taste_dataset(k)
-    if len(dataset) < 10:
-        raise RuntimeError(f"only {len(dataset)} usable liked images — rate more first")
+def _image_paths(db, image_ids: list[int]) -> list[tuple[int, str]]:
+    out = []
+    for image_id in image_ids:
+        row = db.execute(
+            "SELECT location FROM image_sources WHERE image_id = ? AND kind = 'local' LIMIT 1",
+            (image_id,),
+        ).fetchone()
+        if row and os.path.isfile(row["location"]):
+            out.append((image_id, row["location"]))
+    return out
+
+
+def submit_lora(name: str, image_ids: list[int], *, steps: int = 1200, rank: int = 16,
+                lr: float = 1e-4, max_images: int = 60,
+                client: ArtifexClient | None = None) -> dict:
+    """Submit a style-LoRA job to Artifex from an explicit image-id list.
+    Caps to max_images by greedy diversity selection so the set stays varied."""
     from pathlib import Path
 
+    client = _get_client(client)
+    with get_conn() as db:
+        pairs = _image_paths(db, image_ids)
+        if len(pairs) < 10:
+            raise RuntimeError(f"only {len(pairs)} usable images — need at least 10")
+        ids = [i for i, _ in pairs]
+        path_by_id = dict(pairs)
+        kept_ids, mat = load_vectors(db, MODEL_NAME, image_ids=ids)
+        if len(kept_ids) > max_images:
+            order = [int(i) for i in kept_ids]
+            keep = set(_diversity_select(kept_ids, mat, max_images, order))
+            ids = [i for i in ids if i in keep]
+            _, mat = load_vectors(db, MODEL_NAME, image_ids=ids)
+
     images = []
-    for c in dataset:
-        raw = Path(c["path"]).read_bytes()
+    for image_id in ids:
+        raw = Path(path_by_id[image_id]).read_bytes()
         images.append("data:image/png;base64," + base64.b64encode(raw).decode())
 
     config = {
@@ -145,14 +170,10 @@ def train_taste_lora(name: str, k: int = 40, steps: int = 1200, rank: int = 16,
     }
     job = client.train(images=images, captions=[""] * len(images), **config)
 
-    ids = [c["id"] for c in dataset]
     with get_conn() as db:
-        _, mat = load_vectors(db, MODEL_NAME, image_ids=ids)
         sims = mat @ mat.T
         fingerprint = {
-            "n": len(ids),
-            "image_ids": ids,
-            "mean_taste": round(float(np.mean([c["taste"] or 0.5 for c in dataset])), 4),
+            "n": len(ids), "image_ids": ids,
             "mean_pairwise_sim": round(float(sims[np.triu_indices(len(ids), 1)].mean()), 4)
             if len(ids) > 1 else None,
         }
@@ -166,6 +187,16 @@ def train_taste_lora(name: str, k: int = 40, steps: int = 1200, rank: int = 16,
         run_id = cur.lastrowid
     return {"run_id": run_id, "job_id": job.get("job_id"),
             "dataset_size": len(ids), "state": job.get("state")}
+
+
+def train_taste_lora(name: str, k: int = 40, steps: int = 1200, rank: int = 16,
+                     lr: float = 1e-4, client: ArtifexClient | None = None) -> dict:
+    """Submit a style-LoRA job from the globally-curated taste dataset."""
+    dataset = build_taste_dataset(k)
+    if len(dataset) < 10:
+        raise RuntimeError(f"only {len(dataset)} usable liked images — rate more first")
+    return submit_lora(name, [c["id"] for c in dataset], steps=steps, rank=rank,
+                       lr=lr, max_images=k, client=client)
 
 
 def poll_run(run_id: int, client: ArtifexClient | None = None) -> dict:

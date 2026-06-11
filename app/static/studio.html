@@ -72,6 +72,23 @@
       </table>
     </div>
   </section>
+
+  <section>
+    <h2>Style clusters — train a LoRA per coherent group of your likes</h2>
+    <p class="dim" style="margin-bottom:8px">A single taste LoRA blurs across all
+      your likes. These are the groups that actually share a look — each makes a
+      focused style LoRA.</p>
+    <button class="btn" id="b-clusters">Find style clusters</button>
+    <div id="clusters"></div>
+  </section>
+<style>
+  .cluster-card { background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 10px; margin-top: 10px; }
+  .cluster-head { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+  .cluster-thumbs { display: flex; gap: 4px; }
+  .cluster-thumbs img { width: 64px; height: 64px; object-fit: cover; border-radius: var(--radius-sm); }
+  .cluster-head input { width: 150px; }
+</style>
 <script src="/static/app.js"></script>
 <script>
 initNav('studio');
@@ -285,6 +302,57 @@ $('b-eval').addEventListener('click', async () => {
   } catch (e) { toast('Eval failed: ' + e.message); }
   $('b-eval').disabled = false;
 });
+
+$('b-clusters').addEventListener('click', async () => {
+  $('b-clusters').disabled = true;
+  $('clusters').textContent = '';
+  toast('Clustering your likes…');
+  try {
+    const r = await api('/api/studio/clusters');
+    if (!r.clusters.length) {
+      const p = document.createElement('p'); p.className = 'dim';
+      p.textContent = 'No coherent clusters found — rate more, or your likes are very varied.';
+      $('clusters').appendChild(p);
+    }
+    r.clusters.forEach((c, i) => $('clusters').appendChild(clusterCard(c, i)));
+  } catch (e) { toast('Clustering failed: ' + e.message); }
+  $('b-clusters').disabled = false;
+});
+
+function clusterCard(c, i) {
+  const card = document.createElement('div');
+  card.className = 'cluster-card';
+  const head = document.createElement('div');
+  head.className = 'cluster-head';
+  const info = document.createElement('span');
+  info.innerHTML = `<b>Cluster ${c.cluster}</b> · ${c.size} images · cohesion ${c.cohesion}`;
+  const nameInput = document.createElement('input');
+  nameInput.value = `taste-cluster-${c.cluster}`;
+  nameInput.setAttribute('aria-label', 'LoRA name');
+  const train = document.createElement('button');
+  train.className = 'btn btn-primary';
+  train.textContent = 'Train LoRA';
+  train.addEventListener('click', async () => {
+    train.disabled = true;
+    toast(`Training ${nameInput.value} on ${c.size} images…`);
+    try {
+      const res = await api('/api/studio/train_cluster_lora',
+        {name: nameInput.value.trim(), image_ids: c.image_ids});
+      toast(`Run #${res.run_id} submitted (${res.dataset_size} images)`);
+      pollRun(res.run_id); loadRuns();
+    } catch (e) { toast('Train failed: ' + e.message); train.disabled = false; }
+  });
+  head.append(info, nameInput, train);
+  const thumbs = document.createElement('div');
+  thumbs.className = 'cluster-thumbs';
+  for (const id of c.samples) {
+    const img = document.createElement('img');
+    img.loading = 'lazy'; img.src = '/thumb/' + id; img.alt = 'image ' + id;
+    thumbs.appendChild(img);
+  }
+  card.append(head, thumbs);
+  return card;
+}
 
 (async () => {
   sessionId = (await api('/api/sessions', {name: 'studio'})).session_id;
