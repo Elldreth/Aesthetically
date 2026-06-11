@@ -2,7 +2,7 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "imghotornot",
+      "name": "aesthetically",
       "runtimeExecutable": ".venv\\Scripts\\python",
       "runtimeArgs": ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8787"],
       "port": 8787

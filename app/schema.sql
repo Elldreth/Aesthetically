@@ -1,4 +1,4 @@
--- imghotornot v2 schema
+-- Aesthetically schema
 -- Labels are append-only events; "current" state is derived (see current_labels).
 -- Files stay on disk; the DB stores identity (sha256), sources, labels, vectors.
 

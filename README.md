@@ -1,4 +1,6 @@
-# imghotornot v2
+# Aesthetically
+
+*(formerly imghotornot)*
 
 A local, single-user image rating app for building a **personal aesthetic model**:
 rate images fast, accumulate labels in SQLite, and (later phases) train a
@@ -32,7 +34,7 @@ rate-per-minute.
 - `app/` — FastAPI server (`app.main:app`), schema, ingestion, static UI
 - `app/artifex_client.py` — client for the [Artifex](../Artifex) SDXL sidecar
   (generation / LoRA training / dataset QA), used by later phases
-- `data/imghotornot.db` — SQLite database (WAL). Labels are **append-only
+- `data/aesthetically.db` — SQLite database (WAL). Labels are **append-only
   events**; images are identified by SHA-256 of file bytes; files stay where
   they are on disk.
 - `migrate_folders.py` — one-time, non-destructive import of the v1

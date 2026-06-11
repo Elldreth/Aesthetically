@@ -1,4 +1,4 @@
-"""imghotornot v2 — local FastAPI server: rating API + static UI + image serving."""
+"""Aesthetically — local FastAPI server: rating API + static UI + image serving."""
 from __future__ import annotations
 
 import os
@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from .db import get_conn
 
-app = FastAPI(title="imghotornot")
+app = FastAPI(title="Aesthetically")
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
