@@ -2,54 +2,50 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Aesthetically — studio</title>
+<title>Aesthetically — Studio</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%235b8def'/%3E%3Ccircle cx='8' cy='8' r='3.5' fill='%2314151a'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/app.css">
 <style>
-  :root { --bg: #14151a; --panel: #1e2027; --text: #d8dae2; --dim: #7a7e8c; }
-  * { box-sizing: border-box; margin: 0; }
-  body { background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, sans-serif;
-         min-height: 100vh; padding-bottom: 30px; }
-  header { display: flex; gap: 14px; align-items: center; padding: 8px 14px;
-           background: var(--panel); position: sticky; top: 0; }
-  header a { color: #5b8def; text-decoration: none; }
-  #health { margin-left: auto; color: var(--dim); }
-  #health .up { color: #57b368; } #health .down { color: #e05c5c; }
-  section { max-width: 1100px; margin: 18px auto 0; padding: 0 14px; }
-  h2 { font-size: 15px; margin-bottom: 8px; color: #aab0c0; }
+  body { min-height: 100vh; padding-bottom: 40px; }
+  .app-header { position: sticky; top: 0; z-index: 50; }
+  #statusbar { max-width: 1100px; margin: 12px auto 0; padding: 0 16px;
+               display: flex; justify-content: flex-end; gap: 8px; }
+  #artifex-callout { max-width: 1100px; margin: 12px auto 0 auto; }
+  .callout-wrap { max-width: 1100px; margin: 12px auto 0; padding: 0 16px; }
+  section { max-width: 1100px; margin: 24px auto 0; padding: 0 16px; }
+  h2 { font-size: 14px; margin-bottom: 8px; color: var(--text-dim); }
   .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-  input, select { background: #2a2d36; border: 0; border-radius: 5px; color: var(--text);
-                  padding: 8px 10px; font-size: 14px; }
-  #prompt { flex: 1; min-width: 320px; }
-  button { background: #38507e; color: #fff; border: 0; border-radius: 5px;
-           padding: 8px 16px; font-size: 14px; cursor: pointer; }
-  button:disabled { opacity: .5; cursor: wait; }
+  #prompt { flex: 1; min-width: 320px; padding: 8px 10px; font-size: 14px; }
+  #lora-k { width: 70px; } #lora-steps { width: 80px; }
   #results { display: grid; gap: 8px; margin-top: 12px;
              grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
-  .res { position: relative; border-radius: 6px; overflow: hidden; background: #1a1c22; }
+  .res { position: relative; border-radius: var(--radius); overflow: hidden; background: #1a1c22; }
   .res img { width: 100%; display: block; }
   .res .s { position: absolute; top: 6px; left: 6px; background: rgba(0,0,0,.7);
-            padding: 2px 8px; border-radius: 4px; font-weight: 700; }
+            padding: 2px 8px; border-radius: var(--radius-sm); font-weight: 600; font-size: 13px;
+            font-variant-numeric: tabular-nums; }
   .res .acts { position: absolute; bottom: 6px; right: 6px; display: flex; gap: 4px; }
-  .res .acts button { padding: 3px 9px; font-size: 13px; }
-  table { border-collapse: collapse; margin-top: 8px; width: 100%; }
-  td, th { padding: 5px 10px; border-bottom: 1px solid #2a2d36; text-align: left;
-           font-variant-numeric: tabular-nums; }
-  .dim { color: var(--dim); }
-  #log { color: var(--dim); margin-top: 8px; white-space: pre-wrap; }
+  table { margin-top: 8px; }
+  #eval-wrap { margin-top: 16px; max-width: 480px; }
+  #eval-wrap h3 { font-size: 13px; color: var(--text-dim); margin-bottom: 4px; }
 </style>
 </head>
 <body>
-  <header>
-    <a href="/">⟵ rate</a><a href="/static/grid.html">grid ⊞</a><a href="/static/tournament.html">rank ⚔</a>
-    <b>studio</b>
-    <span id="health">checking artifex…</span>
-  </header>
+  <div id="statusbar">
+    <span class="badge" id="health">checking Artifex…</span>
+  </div>
+  <div class="callout-wrap" id="callout-wrap" hidden>
+    <div class="callout" role="alert">
+      Artifex (the local SDXL service) isn&#8217;t running &#8212; start it on port 7860 to enable generation and training.
+    </div>
+  </div>
 
   <section>
     <h2>Best-of-N — generate, let your taste model pick</h2>
     <div class="row">
-      <input id="prompt" placeholder="prompt (Artifex DSL flags like --style work)">
-      <select id="n"><option>2</option><option selected>4</option><option>6</option><option>8</option></select>
-      <button id="b-gen">generate</button>
+      <input id="prompt" placeholder="describe an image to generate…" aria-label="Generation prompt">
+      <select id="n" aria-label="Number of seeds"><option>2</option><option selected>4</option><option>6</option><option>8</option></select>
+      <button class="btn btn-primary" id="b-gen">Generate</button>
     </div>
     <div id="results"></div>
   </section>
@@ -57,113 +53,238 @@
   <section>
     <h2>Taste LoRA — train on your best-loved, most diverse likes</h2>
     <div class="row">
-      <input id="lora-name" placeholder="lora name" value="my-taste-v1" size="16">
-      <label class="dim">images <input id="lora-k" type="number" value="40" min="10" max="200" style="width:70px"></label>
-      <label class="dim">steps <input id="lora-steps" type="number" value="1200" step="100" style="width:80px"></label>
-      <button id="b-train">train</button>
-      <button id="b-eval" title="probe-prompt eval of selected run">eval latest run</button>
+      <input id="lora-name" placeholder="lora name" value="my-taste-v1" size="16" aria-label="LoRA name">
+      <label class="dim">images <input id="lora-k" type="number" value="40" min="10" max="200" aria-label="Number of training images"></label>
+      <label class="dim">steps <input id="lora-steps" type="number" value="1200" step="100" aria-label="Training steps"></label>
+      <button class="btn btn-primary" id="b-train">Train</button>
+      <button class="btn" id="b-eval" title="probe-prompt eval of the latest completed run">Eval latest run</button>
+      <span class="badge" id="train-status" hidden></span>
     </div>
-    <table id="runs"><thead><tr><th>run</th><th>name</th><th>status</th><th>dataset</th><th>artifact</th></tr></thead><tbody></tbody></table>
-    <div id="log"></div>
+    <table id="runs">
+      <thead><tr><th>run</th><th>name</th><th>status</th><th>dataset</th><th>artifact</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div id="eval-wrap" hidden>
+      <h3 id="eval-title">Eval results</h3>
+      <table id="eval-table">
+        <thead><tr><th>metric</th><th>base</th><th>LoRA</th><th>delta</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
   </section>
+<script src="/static/app.js"></script>
 <script>
+initNav('studio');
+helpOverlay([
+  ['?', 'Toggle this help'],
+]);
+
 const $ = id => document.getElementById(id);
 let sessionId = null;
 
-async function api(path, body) {
-  const res = await fetch(path, body === undefined ? {} : {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(body)});
-  if (!res.ok) throw new Error((await res.text()).slice(0, 300));
-  return res.json();
+function setHealthBadge(kind, text) {
+  const b = $('health');
+  b.className = 'badge ' + kind;
+  b.textContent = text;
 }
-const log = m => { $('log').textContent = m; };
 
 async function health() {
   try {
     const h = await api('/api/studio/health');
-    $('health').innerHTML = h.artifex
-      ? '<span class="up">● artifex up</span>' +
-        (h.vram ? ` <span class="dim">${h.vram.free_gb}GB free</span>` : '')
-      : '<span class="down">● artifex down</span> <span class="dim">start it at :7860</span>';
-  } catch { $('health').innerHTML = '<span class="down">● artifex down</span>'; }
+    if (h.artifex) {
+      setHealthBadge('ok', 'Artifex up' +
+        (h.vram && h.vram.free_gb != null ? ' · ' + h.vram.free_gb + 'GB free' : ''));
+      $('callout-wrap').hidden = true;
+    } else {
+      setHealthBadge('fail', 'Artifex down');
+      $('callout-wrap').hidden = false;
+    }
+  } catch {
+    setHealthBadge('fail', 'Artifex down');
+    $('callout-wrap').hidden = false;
+  }
 }
 
-$('b-gen').onclick = async () => {
+async function rateResult(imageId, value, label) {
+  try {
+    await api('/api/label', {image_id: imageId, value, session_id: sessionId});
+    toast('Rated image ' + imageId + ' — ' + label);
+  } catch (e) { toast('Rating failed: ' + e.message); }
+}
+
+$('b-gen').addEventListener('click', async () => {
   const prompt = $('prompt').value.trim();
   if (!prompt) return;
-  $('b-gen').disabled = true; log('generating ' + $('n').value + ' seeds…');
+  $('b-gen').disabled = true;
+  toast('Generating ' + $('n').value + ' seeds…');
   try {
     const r = await api('/api/studio/best_of_n', {prompt, n: +$('n').value});
-    $('results').innerHTML = '';
+    const host = $('results');
+    host.textContent = '';
     for (const it of r.items) {
       const d = document.createElement('div');
       d.className = 'res';
-      d.innerHTML = `<img src="/img/${it.image_id}">` +
-        (it.score != null ? `<span class="s">${it.score.toFixed(2)}</span>` : '') +
-        `<div class="acts">
-           <button onclick="rate(${it.image_id},0)">👎</button>
-           <button onclick="rate(${it.image_id},1)">👍</button>
-         </div>`;
-      $('results').appendChild(d);
+      const img = document.createElement('img');
+      img.src = '/img/' + it.image_id;
+      img.alt = 'image ' + it.image_id;
+      d.appendChild(img);
+      if (it.score != null) {
+        const s = document.createElement('span');
+        s.className = 's';
+        s.title = "model's predicted like-probability";
+        s.textContent = it.score.toFixed(2);
+        d.appendChild(s);
+      }
+      const acts = document.createElement('div');
+      acts.className = 'acts';
+      const down = document.createElement('button');
+      down.className = 'btn btn-nay icon-btn';
+      down.setAttribute('aria-label', 'Dislike image ' + it.image_id);
+      down.innerHTML = ICONS.thumbsDown;            // static icon string, no user data
+      down.addEventListener('click', () => rateResult(it.image_id, 0, 'Nay'));
+      const up = document.createElement('button');
+      up.className = 'btn btn-yay icon-btn';
+      up.setAttribute('aria-label', 'Like image ' + it.image_id);
+      up.innerHTML = ICONS.thumbsUp;
+      up.addEventListener('click', () => rateResult(it.image_id, 1, 'Yay'));
+      acts.append(down, up);
+      d.appendChild(acts);
+      host.appendChild(d);
     }
-    log('done — ranked best first; your ratings refine the next round');
-  } catch (e) { log('failed: ' + e.message); }
+    toast('Done — ranked best first; your ratings refine the next round');
+  } catch (e) { toast('Generation failed: ' + e.message); }
   $('b-gen').disabled = false;
-};
+});
 
-async function rate(imageId, value) {
-  await api('/api/label', {image_id: imageId, value, session_id: sessionId});
-  log('rated #' + imageId + (value ? ' 👍' : ' 👎'));
+function statusBadge(status) {
+  const b = document.createElement('span');
+  b.className = 'badge ' +
+    (status === 'done' ? 'ok' :
+     status === 'failed' ? 'fail' :
+     (status === 'running' || status === 'pending') ? 'busy' : '');
+  b.textContent = status;
+  return b;
 }
 
 async function loadRuns() {
   const r = await api('/api/studio/runs');
   const tb = $('runs').querySelector('tbody');
-  tb.innerHTML = '';
+  tb.textContent = '';
+  if (!r.items.length) {
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = 5;
+    td.className = 'dim';
+    td.textContent = 'No training runs yet.';
+    tr.appendChild(td);
+    tb.appendChild(tr);
+    return;
+  }
+  // run.name and artifact_path are user-controlled — textContent only, never innerHTML
   for (const run of r.items) {
-    const fp = JSON.parse(run.dataset_fingerprint_json || '{}');
-    tb.innerHTML += `<tr><td>#${run.id}</td><td>${run.name}</td><td>${run.status}</td>` +
-      `<td class="dim">${fp.n || '?'} imgs · taste ${fp.mean_taste ?? '?'}</td>` +
-      `<td class="dim">${run.artifact_path || '—'}</td></tr>`;
+    let fp = {};
+    try { fp = JSON.parse(run.dataset_fingerprint_json || '{}'); } catch {}
+    const tr = document.createElement('tr');
+    const cells = [
+      '#' + run.id,
+      run.name,
+      null,                                                      // status badge
+      (fp.n || '?') + ' imgs · taste ' + (fp.mean_taste ?? '?'),
+      run.artifact_path || '—',
+    ];
+    cells.forEach((text, i) => {
+      const td = document.createElement('td');
+      if (i === 2) td.appendChild(statusBadge(run.status));
+      else td.textContent = text;
+      if (i === 3 || i === 4) td.className = 'dim';
+      tr.appendChild(td);
+    });
+    tb.appendChild(tr);
   }
 }
 
-$('b-train').onclick = async () => {
-  $('b-train').disabled = true; log('curating dataset + submitting to Artifex…');
+function setTrainStatus(kind, text) {
+  const b = $('train-status');
+  b.className = 'badge' + (kind ? ' ' + kind : '');
+  b.textContent = text;
+  b.hidden = !text;
+}
+
+$('b-train').addEventListener('click', async () => {
+  $('b-train').disabled = true;
+  setTrainStatus('busy', 'curating dataset…');
   try {
     const r = await api('/api/studio/train_lora', {
       name: $('lora-name').value.trim(), k: +$('lora-k').value, steps: +$('lora-steps').value});
-    log(`run #${r.run_id} submitted (job ${r.job_id}, ${r.dataset_size} images). ` +
-        'Training takes a while - status updates in the table.');
+    toast(`Run #${r.run_id} submitted (job ${r.job_id}, ${r.dataset_size} images) — ` +
+          'training takes a while; status updates in the table');
     pollRun(r.run_id);
-  } catch (e) { log('failed: ' + e.message); }
+  } catch (e) {
+    setTrainStatus('fail', 'submit failed');
+    toast('Training failed: ' + e.message);
+  }
   $('b-train').disabled = false; loadRuns();
-};
+});
 
+let lastPollState = null;
 async function pollRun(runId) {
   try {
     const s = await api(`/api/studio/runs/${runId}`);
     const st = s.job.state;
-    log(`run #${runId}: ${st}` + (s.job.step ? ` — step ${s.job.step}/${s.job.total}` : ''));
+    const detail = `run #${runId}: ${st}` + (s.job.step ? ` — step ${s.job.step}/${s.job.total}` : '');
     loadRuns();
     if (st && !['completed', 'failed', 'cancelled'].includes(st)) {
+      setTrainStatus('busy', detail);
       setTimeout(() => pollRun(runId), 10000);
+    } else {
+      setTrainStatus(st === 'completed' ? 'ok' : 'fail', detail);
+      if (st !== lastPollState) toast('Run #' + runId + ' ' + st);
     }
-  } catch (e) { log('poll failed: ' + e.message); }
+    lastPollState = st;
+  } catch (e) { setTrainStatus('fail', 'poll failed'); toast('Poll failed: ' + e.message); }
 }
 
-$('b-eval').onclick = async () => {
+function fmt(v) { return v == null ? '—' : Number(v).toFixed(3); }
+
+function renderEval(runId, summary) {
+  const tb = $('eval-table').querySelector('tbody');
+  tb.textContent = '';
+  $('eval-title').textContent = `Eval — run #${runId} (LoRA vs. base checkpoint)`;
+  for (const metric of ['taste', 'adherence', 'fidelity', 'diversity']) {
+    const base = summary.base ? summary.base[metric] : null;
+    const lora = summary.lora ? summary.lora[metric] : null;
+    const tr = document.createElement('tr');
+    const name = document.createElement('td');
+    name.textContent = metric;
+    const b = document.createElement('td');
+    b.textContent = fmt(base);
+    const l = document.createElement('td');
+    l.textContent = fmt(lora);
+    const d = document.createElement('td');
+    if (base != null && lora != null) {
+      const delta = lora - base;
+      d.textContent = (delta >= 0 ? '+' : '') + delta.toFixed(3);
+      if (delta > 0) d.className = 'delta-up';
+      else if (delta < 0) d.className = 'delta-down';
+    } else d.textContent = '—';
+    tr.append(name, b, l, d);
+    tb.appendChild(tr);
+  }
+  $('eval-wrap').hidden = false;
+}
+
+$('b-eval').addEventListener('click', async () => {
   const r = await api('/api/studio/runs');
   const done = r.items.find(x => x.status === 'done');
-  if (!done) { log('no completed run to eval'); return; }
-  $('b-eval').disabled = true; log(`evaluating run #${done.id} on your probe prompts…`);
+  if (!done) { toast('No completed run to eval'); return; }
+  $('b-eval').disabled = true;
+  toast(`Evaluating run #${done.id} on your probe prompts…`);
   try {
     const ev = await api('/api/studio/eval_lora', {run_id: done.id});
-    log('eval: ' + JSON.stringify(ev.summary, null, 1));
-  } catch (e) { log('eval failed: ' + e.message); }
+    renderEval(done.id, ev.summary || {});
+  } catch (e) { toast('Eval failed: ' + e.message); }
   $('b-eval').disabled = false;
-};
+});
 
 (async () => {
   sessionId = (await api('/api/sessions', {name: 'studio'})).session_id;

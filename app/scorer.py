@@ -41,12 +41,22 @@ def score_images(pils: list[Image.Image], head: dict | None = None,
 
 def store_embedding_and_score(image_id: int, vec: np.ndarray, score: float,
                               head_name: str) -> None:
-    with get_conn() as db:
-        db.execute(
-            "INSERT OR REPLACE INTO embeddings (image_id, model, dim, vec) VALUES (?, ?, ?, ?)",
-            (image_id, MODEL_NAME, vec.shape[0], vec.tobytes()),
-        )
-        db.execute(
-            "INSERT OR REPLACE INTO predictions (image_id, model, score) VALUES (?, ?, ?)",
-            (image_id, head_name, float(score)),
-        )
+    db = get_conn()
+    try:
+        with db:
+            db.execute(
+                "INSERT OR REPLACE INTO embeddings (image_id, model, dim, vec) VALUES (?, ?, ?, ?)",
+                (image_id, MODEL_NAME, vec.shape[0], vec.tobytes()),
+            )
+            # one taste:% row per image — a retrain between generate and store
+            # must not leave both vN and vN-1 rows (duplicate queue entries)
+            db.execute(
+                "DELETE FROM predictions WHERE image_id = ? AND model LIKE 'taste:%'",
+                (image_id,),
+            )
+            db.execute(
+                "INSERT INTO predictions (image_id, model, score) VALUES (?, ?, ?)",
+                (image_id, head_name, float(score)),
+            )
+    finally:
+        db.close()

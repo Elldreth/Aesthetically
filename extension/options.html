@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Aesthetically — options</title>
+<style>
+  body { background: #14151a; color: #d8dae2; font: 14px/1.5 system-ui, sans-serif;
+         max-width: 480px; margin: 40px auto; padding: 0 16px; }
+  h1 { font-size: 18px; font-weight: 600; }
+  label { display: block; margin: 16px 0 4px; color: #9aa0b0; font-size: 13px; }
+  input { width: 100%; box-sizing: border-box; background: #2a2d36; border: 0;
+          border-radius: 5px; color: #d8dae2; padding: 9px 10px; font-size: 14px; }
+  button { margin-top: 18px; background: #5b8def; color: #fff; border: 0;
+           border-radius: 5px; padding: 9px 18px; font-size: 14px; cursor: pointer; }
+  #status { margin-left: 10px; color: #57b368; }
+  p.hint { color: #9aa0b0; font-size: 13px; }
+</style>
+</head>
+<body>
+  <h1>Aesthetically</h1>
+  <p class="hint">The extension sends rated images to your local Aesthetically
+  app. The API token is in the app's <code>data/token.txt</code> (or shown in
+  its settings page).</p>
+  <label for="apiUrl">API URL</label>
+  <input id="apiUrl" placeholder="http://127.0.0.1:8787">
+  <label for="token">API token</label>
+  <input id="token" placeholder="paste token here">
+  <button id="save">Save</button><span id="status"></span>
+  <script src="options.js"></script>
+</body>
+</html>

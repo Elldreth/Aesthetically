@@ -14,9 +14,21 @@ ARTIFEX_URL = os.environ.get("ARTIFEX_URL", "http://127.0.0.1:7860")
 
 
 class ArtifexClient:
+    """Usable as a context manager; finite timeouts so a stalled Artifex can't
+    pin a request thread forever."""
+
     def __init__(self, base_url: str = ARTIFEX_URL, timeout: float = 30.0):
         self.base_url = base_url.rstrip("/")
         self._client = httpx.Client(base_url=self.base_url, timeout=timeout)
+
+    def close(self) -> None:
+        self._client.close()
+
+    def __enter__(self) -> "ArtifexClient":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
 
     def is_up(self) -> bool:
         try:
@@ -27,7 +39,7 @@ class ArtifexClient:
     def generate(self, prompt: str, **kwargs) -> dict:
         """POST /v1/images/generations (OpenAI-Images-style contract)."""
         payload = {"prompt": prompt, **kwargs}
-        r = self._client.post("/v1/images/generations", json=payload, timeout=None)
+        r = self._client.post("/v1/images/generations", json=payload, timeout=300.0)
         r.raise_for_status()
         return r.json()
 
@@ -37,14 +49,14 @@ class ArtifexClient:
         payload = {"images": images, "face": face}
         if captions is not None:
             payload["captions"] = captions
-        r = self._client.post("/v1/dataset/analyze", json=payload, timeout=None)
+        r = self._client.post("/v1/dataset/analyze", json=payload, timeout=600.0)
         r.raise_for_status()
         return r.json()
 
     def train(self, images: list[str], name: str, **kwargs) -> dict:
         """POST /v1/train — start a LoRA training job; poll with train_status()."""
         payload = {"images": images, "name": name, **kwargs}
-        r = self._client.post("/v1/train", json=payload, timeout=None)
+        r = self._client.post("/v1/train", json=payload, timeout=600.0)
         r.raise_for_status()
         return r.json()
 

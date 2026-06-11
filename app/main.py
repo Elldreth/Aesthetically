@@ -2,27 +2,73 @@
 from __future__ import annotations
 
 import base64
+import logging
 import os
+import secrets
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .db import DATA_DIR, get_conn
-from .ingest import register_bytes
+from .ingest import DECODE_ERRORS, register_bytes
 
-app = FastAPI(title="Aesthetically")
+log = logging.getLogger("aesthetically")
+
+# Loopback app, hostile internet: any website the user visits can fire POSTs at
+# 127.0.0.1 (text/plain bodies skip CORS preflight), and DNS rebinding defeats
+# origin checks. Defense: (1) strict Host allowlist, (2) a per-install token
+# required on every mutating request. The token is set as a SameSite=Strict
+# cookie when the UI loads; app.js echoes it in the X-Aesth-Token header.
+# The extension stores it via its options page.
+ALLOWED_HOSTS = {h.strip() for h in os.environ.get(
+    "AESTH_ALLOWED_HOSTS", "127.0.0.1:8787,localhost:8787").split(",")}
+TOKEN_PATH = DATA_DIR / "token.txt"
+
+
+def _load_token() -> str:
+    if TOKEN_PATH.is_file():
+        return TOKEN_PATH.read_text(encoding="utf-8").strip()
+    TOKEN_PATH.parent.mkdir(parents=True, exist_ok=True)
+    token = secrets.token_urlsafe(32)
+    TOKEN_PATH.write_text(token, encoding="utf-8")
+    return token
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    get_conn().close()          # apply schema once, eagerly
+    _app.state.token = _load_token()
+    yield
+
+
+app = FastAPI(title="Aesthetically", lifespan=lifespan)
 
 # the browser extension calls /api/ingest from chrome-extension:// origins
 app.add_middleware(
     CORSMiddleware,
     allow_origin_regex=r"^(chrome|moz)-extension://.*$",
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "X-Aesth-Token"],
 )
+
+
+@app.middleware("http")
+async def guard(request: Request, call_next):
+    host = request.headers.get("host", "")
+    if host not in ALLOWED_HOSTS:
+        return JSONResponse({"detail": "unknown host"}, status_code=421)
+    if request.method not in ("GET", "HEAD", "OPTIONS") and request.url.path.startswith("/api/"):
+        token = getattr(request.app.state, "token", None)
+        sent = request.headers.get("x-aesth-token") or request.cookies.get("aesth_token")
+        if token and not (sent and secrets.compare_digest(sent, token)):
+            return JSONResponse({"detail": "missing or invalid token"}, status_code=403)
+    response = await call_next(request)
+    return response
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -48,13 +94,37 @@ class SessionIn(BaseModel):
     name: str | None = None
 
 
+@contextmanager
 def conn():
-    return get_conn()
+    """Per-request connection: commits on success, always closed."""
+    db = get_conn()
+    try:
+        with db:
+            yield db
+    finally:
+        db.close()
+
+
+def _ui_response(page: str) -> Response:
+    resp = FileResponse(STATIC_DIR / page)
+    token = getattr(app.state, "token", None)
+    if token:
+        resp.set_cookie("aesth_token", token, samesite="strict", httponly=False,
+                        max_age=365 * 24 * 3600)
+    return resp
 
 
 @app.get("/")
 def index():
-    return FileResponse(STATIC_DIR / "index.html")
+    return _ui_response("index.html")
+
+
+@app.get("/static/{page}.html")
+def ui_page(page: str):
+    safe = Path(page).name + ".html"
+    if not (STATIC_DIR / safe).is_file():
+        raise HTTPException(404)
+    return _ui_response(safe)
 
 
 @app.get("/img/{image_id}")
@@ -70,18 +140,23 @@ def serve_image(image_id: int):
     raise HTTPException(404, "no readable local source for image")
 
 
+# scalar subquery (not a JOIN): an image briefly holding two taste:% rows during
+# a retrain race must not appear twice in the queue
 _UNRATED = """
-    FROM images i
-    LEFT JOIN predictions p ON p.image_id = i.id AND p.model LIKE 'taste:%'
+    FROM (SELECT i.*,
+                 (SELECT score FROM predictions p WHERE p.image_id = i.id
+                  AND p.model LIKE 'taste:%' ORDER BY p.created_at DESC, p.model DESC
+                  LIMIT 1) AS score
+          FROM images i) i
     WHERE NOT EXISTS (SELECT 1 FROM current_labels c
                       WHERE c.image_id = i.id AND c.kind IN ('binary','exclude'))
       AND NOT EXISTS (SELECT 1 FROM near_dups d WHERE d.image_id = i.id)
 """
 _QUEUE_ORDER = {
     "default": "i.id",
-    "uncertain": "CASE WHEN p.score IS NULL THEN 1 ELSE 0 END, ABS(p.score - 0.5)",
-    "best": "p.score IS NULL, p.score DESC",
-    "worst": "p.score IS NULL, p.score ASC",
+    "uncertain": "CASE WHEN i.score IS NULL THEN 1 ELSE 0 END, ABS(i.score - 0.5)",
+    "best": "i.score IS NULL, i.score DESC",
+    "worst": "i.score IS NULL, i.score ASC",
 }
 
 
@@ -96,7 +171,7 @@ def queue(limit: int = 20, mode: str = "default"):
         raise HTTPException(422, f"mode must be one of {sorted(_QUEUE_ORDER)}")
     with conn() as db:
         rows = db.execute(
-            f"""SELECT i.id, i.width, i.height, i.prompt, i.model_hash, p.score
+            f"""SELECT i.id, i.width, i.height, i.prompt, i.model_hash, i.score
                 {_UNRATED} ORDER BY {order} LIMIT ?""",
             (limit,),
         ).fetchall()
@@ -120,10 +195,17 @@ def thumbnail(image_id: int):
         from PIL import Image
 
         thumb_dir.mkdir(parents=True, exist_ok=True)
-        with Image.open(src) as img:
-            img = img.convert("RGB")
-            img.thumbnail((320, 320))
-            img.save(thumb_path, "WEBP", quality=80)
+        tmp_path = thumb_dir / f".{image_id}.{os.getpid()}.tmp"
+        try:
+            with Image.open(src) as img:
+                img = img.convert("RGB")
+                img.thumbnail((320, 320))
+                img.save(tmp_path, "WEBP", quality=80)
+            os.replace(tmp_path, thumb_path)  # atomic: concurrent firsts can't collide
+        except DECODE_ERRORS:
+            raise HTTPException(415, "source image is unreadable")
+        finally:
+            tmp_path.unlink(missing_ok=True)
     return FileResponse(thumb_path, media_type="image/webp")
 
 
@@ -136,7 +218,7 @@ def grid(mode: str = "worst", limit: int = 60, offset: int = 0):
     with conn() as db:
         total = db.execute(f"SELECT count(*) AS n {_UNRATED}").fetchone()["n"]
         rows = db.execute(
-            f"""SELECT i.id, p.score {_UNRATED} ORDER BY {order} LIMIT ? OFFSET ?""",
+            f"""SELECT i.id, i.score {_UNRATED} ORDER BY {order} LIMIT ? OFFSET ?""",
             (limit, offset),
         ).fetchall()
     return {"total": total, "items": [dict(r) for r in rows]}
@@ -148,13 +230,26 @@ class BulkLabelIn(BaseModel):
     session_id: int | None = None
 
 
+def _require_images(db, image_ids: list[int]) -> None:
+    placeholders = ",".join("?" * len(image_ids))
+    n = db.execute(
+        f"SELECT count(*) AS n FROM images WHERE id IN ({placeholders})",
+        image_ids,
+    ).fetchone()["n"]
+    if n != len(set(image_ids)):
+        raise HTTPException(404, "unknown image id in request")
+
+
 @app.post("/api/labels/bulk")
 def bulk_label(body: BulkLabelIn):
     if body.value not in VALID_BINARY:
         raise HTTPException(422, "value must be 1, 0.5 or 0")
     if not body.image_ids:
         return {"labeled": 0}
+    if len(body.image_ids) > 500:
+        raise HTTPException(422, "too many images in one request")
     with conn() as db:
+        _require_images(db, body.image_ids)
         db.executemany(
             "INSERT INTO labels (image_id, kind, value, source, session_id)"
             " VALUES (?, 'binary', ?, 'manual', ?)",
@@ -247,9 +342,15 @@ def rankings(limit: int = 50):
 
 # ---- studio: the Artifex closed loop ----
 
+def _studio_guard(e: Exception) -> HTTPException:
+    """Long stack traces and internal paths stay in the server log."""
+    log.exception("studio operation failed")
+    return HTTPException(502, "operation failed — check the server log")
+
+
 class BestOfNIn(BaseModel):
-    prompt: str
-    n: int = 4
+    prompt: str = Field(min_length=1, max_length=4000)
+    n: int = Field(default=4, ge=1, le=8)
     model: str | None = None
     size: str = "832x1216"
     loras: list[dict] | None = None
@@ -263,15 +364,15 @@ def studio_best_of_n(body: BestOfNIn):
         return {"items": studio.best_of_n(body.prompt, body.n, body.model,
                                           body.size, body.loras)}
     except Exception as e:
-        raise HTTPException(502, f"{type(e).__name__}: {e}")
+        raise _studio_guard(e)
 
 
 class TrainLoraIn(BaseModel):
-    name: str
-    k: int = 40
-    steps: int = 1200
-    rank: int = 16
-    lr: float = 1e-4
+    name: str = Field(min_length=1, max_length=80)
+    k: int = Field(default=40, ge=10, le=200)
+    steps: int = Field(default=1200, ge=50, le=4000)
+    rank: int = Field(default=16, ge=4, le=64)
+    lr: float = Field(default=1e-4, gt=0, le=1e-2)
 
 
 @app.post("/api/studio/train_lora")
@@ -281,7 +382,7 @@ def studio_train_lora(body: TrainLoraIn):
     try:
         return studio.train_taste_lora(body.name, body.k, body.steps, body.rank, body.lr)
     except Exception as e:
-        raise HTTPException(502, f"{type(e).__name__}: {e}")
+        raise _studio_guard(e)
 
 
 @app.get("/api/studio/runs")
@@ -301,14 +402,14 @@ def studio_run_status(run_id: int):
     try:
         return studio.poll_run(run_id)
     except Exception as e:
-        raise HTTPException(502, f"{type(e).__name__}: {e}")
+        raise _studio_guard(e)
 
 
 class EvalLoraIn(BaseModel):
     run_id: int
     lora_name: str | None = None
-    prompts: list[str] | None = None
-    seeds_per_prompt: int = 2
+    prompts: list[str] | None = Field(default=None, max_length=12)
+    seeds_per_prompt: int = Field(default=2, ge=1, le=4)
     model: str | None = None
 
 
@@ -320,26 +421,26 @@ def studio_eval_lora(body: EvalLoraIn):
         return studio.eval_lora(body.run_id, body.lora_name, body.prompts,
                                 body.seeds_per_prompt, body.model)
     except Exception as e:
-        raise HTTPException(502, f"{type(e).__name__}: {e}")
+        raise _studio_guard(e)
 
 
 @app.get("/api/studio/health")
 def studio_health():
     from .artifex_client import ArtifexClient
 
-    client = ArtifexClient(timeout=3.0)
-    up = client.is_up()
-    out = {"artifex": up}
-    if up:
-        try:
-            import httpx
+    with ArtifexClient(timeout=3.0) as client:
+        up = client.is_up()
+        out = {"artifex": up}
+        if up:
+            try:
+                import httpx
 
-            r = httpx.get(client.base_url + "/health", timeout=5.0).json()
-            out.update({k: r.get(k) for k in ("models", "vram") if k in r})
-            r2 = httpx.get(client.base_url + "/v1/loras", timeout=5.0).json()
-            out["loras"] = [l.get("name") for l in r2] if isinstance(r2, list) else r2
-        except Exception:
-            pass
+                r = httpx.get(client.base_url + "/health", timeout=5.0).json()
+                out.update({k: r.get(k) for k in ("models", "vram") if k in r})
+                r2 = httpx.get(client.base_url + "/v1/loras", timeout=5.0).json()
+                out["loras"] = [l.get("name") for l in r2] if isinstance(r2, list) else r2
+            except Exception:
+                pass
     return out
 
 
@@ -379,6 +480,7 @@ def add_label(body: LabelIn):
 @app.post("/api/exclude")
 def exclude(body: ExcludeIn):
     with conn() as db:
+        _require_images(db, [body.image_id])
         cur = db.execute(
             "INSERT INTO labels (image_id, kind, value, source, session_id)"
             " VALUES (?, 'exclude', 1, 'manual', ?)",
@@ -389,19 +491,18 @@ def exclude(body: ExcludeIn):
 
 @app.post("/api/undo")
 def undo(body: UndoIn):
-    """Remove the most recent manual label (scoped to session when given)."""
+    """Remove the most recent manual label in the given session.
+
+    session_id is required: a global undo would let one client erase another's
+    most recent rating."""
+    if body.session_id is None:
+        raise HTTPException(422, "session_id is required")
     with conn() as db:
-        if body.session_id is not None:
-            row = db.execute(
-                "SELECT id, image_id, kind, value FROM labels"
-                " WHERE source = 'manual' AND session_id = ? ORDER BY id DESC LIMIT 1",
-                (body.session_id,),
-            ).fetchone()
-        else:
-            row = db.execute(
-                "SELECT id, image_id, kind, value FROM labels"
-                " WHERE source = 'manual' ORDER BY id DESC LIMIT 1"
-            ).fetchone()
+        row = db.execute(
+            "SELECT id, image_id, kind, value FROM labels"
+            " WHERE source = 'manual' AND session_id = ? ORDER BY id DESC LIMIT 1",
+            (body.session_id,),
+        ).fetchone()
         if not row:
             raise HTTPException(404, "nothing to undo")
         db.execute("DELETE FROM labels WHERE id = ?", (row["id"],))
@@ -422,6 +523,8 @@ def ingest(body: IngestIn):
 
     Content-addressed: re-ingesting known bytes only adds source rows, so the
     same image rated on two sites stays one record."""
+    if len(body.data_b64) > 45_000_000:  # ~33MB binary
+        raise HTTPException(413, "image too large")
     try:
         data = base64.b64decode(body.data_b64)
     except Exception:
@@ -435,7 +538,7 @@ def ingest(body: IngestIn):
                 db, data, store_dir=DATA_DIR / "ingested",
                 image_url=body.image_url, page_url=body.page_url,
             )
-        except Exception:
+        except DECODE_ERRORS:
             raise HTTPException(422, "not a decodable image")
         label_id = None
         if body.value is not None:
@@ -469,14 +572,19 @@ def stats(session_id: int | None = None):
         excluded = db.execute(
             "SELECT count(*) AS n FROM current_labels WHERE kind = 'exclude'"
         ).fetchone()["n"]
-        labeled = sum(by_value.values())
+        # distinct images with ANY current label — an image that is both rated
+        # and excluded must not be subtracted twice
+        labeled_any = db.execute(
+            "SELECT count(DISTINCT image_id) AS n FROM current_labels"
+            " WHERE kind IN ('binary','exclude')"
+        ).fetchone()["n"]
         out = {
             "total": total,
             "liked": by_value.get(1.0, 0),
             "maybe": by_value.get(0.5, 0),
             "disliked": by_value.get(0.0, 0),
             "excluded": excluded,
-            "unlabeled": total - labeled - excluded,
+            "unlabeled": total - labeled_any,
         }
         if session_id is not None:
             row = db.execute(

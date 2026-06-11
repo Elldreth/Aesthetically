@@ -2,119 +2,213 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Aesthetically — grid triage</title>
+<title>Aesthetically — Grid</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%235b8def'/%3E%3Ccircle cx='8' cy='8' r='3.5' fill='%2314151a'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/app.css">
 <style>
-  :root { --bg: #14151a; --panel: #1e2027; --text: #d8dae2; --dim: #7a7e8c; }
-  * { box-sizing: border-box; margin: 0; }
-  body { background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, sans-serif;
-         height: 100vh; display: flex; flex-direction: column; }
-  #top { display: flex; gap: 10px; align-items: center; padding: 8px 14px;
-         background: var(--panel); flex-wrap: wrap; }
-  #top a { color: #5b8def; text-decoration: none; }
-  select, .btn { background: #3a3e4a; color: var(--text); border: 0; border-radius: 5px;
-                 padding: 6px 12px; font-size: 13px; cursor: pointer; }
-  .btn.nay { background: #6b3434; } .btn.yay { background: #2f5c3a; }
-  .btn.maybe { background: #6b5a2a; }
-  #info { color: var(--dim); margin-left: auto; }
-  #grid { flex: 1; overflow-y: auto; display: grid; gap: 6px; padding: 8px;
-          grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); align-content: start; }
-  .cell { position: relative; border-radius: 5px; overflow: hidden; cursor: pointer;
-          outline: 3px solid transparent; aspect-ratio: 1; background: #1a1c22; }
-  .cell img { width: 100%; height: 100%; object-fit: cover; display: block; }
-  .cell.sel { outline-color: #5b8def; }
-  .cell .score { position: absolute; left: 5px; top: 5px; background: rgba(0,0,0,.65);
-                 border-radius: 3px; padding: 1px 6px; font-size: 12px;
+  body { height: 100vh; display: flex; flex-direction: column; }
+  #top { display: flex; gap: 8px; align-items: center; padding: 8px 16px;
+         background: var(--surface); flex-wrap: wrap; }
+  .group { display: flex; gap: 8px; align-items: center; }
+  .sep { width: 1px; height: 20px; background: var(--surface-3); flex: none; }
+  #train-group { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+  #info { color: var(--text-dim); font-size: 12px; font-variant-numeric: tabular-nums; }
+  #page-label { color: var(--text-dim); font-size: 13px; font-variant-numeric: tabular-nums;
+                white-space: nowrap; }
+  /* explicit row track: aspect-ratio-driven item heights are NOT reflected in
+     implicit grid row sizing here (tracks collapsed and rows overlapped) —
+     fixed rows + cover-cropped thumbs are robust at every viewport width */
+  #grid { flex: 1; overflow-y: auto; display: grid; gap: 8px; padding: 8px;
+          grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+          grid-auto-rows: 190px; align-content: start; }
+  .cell { position: relative; height: 100%; border-radius: var(--radius-sm); overflow: hidden;
+          cursor: pointer; outline: 3px solid transparent; background: #1a1c22; }
+  .cell img { position: absolute; inset: 0; width: 100%; height: 100%;
+              object-fit: cover; display: block; }
+  .cell.sel { outline-color: var(--accent); }
+  .cell .score { position: absolute; left: 4px; top: 4px; background: rgba(0,0,0,.65);
+                 border-radius: var(--radius-sm); padding: 1px 6px; font-size: 12px;
                  font-variant-numeric: tabular-nums; }
-  kbd { background: #2a2d36; border-radius: 3px; padding: 0 5px; font-size: 12px; }
-  #empty { grid-column: 1/-1; text-align: center; color: var(--dim); padding: 60px 0; }
+  #grid .empty-state { grid-column: 1 / -1; }
 </style>
 </head>
 <body>
   <div id="top">
-    <a href="/">⟵ rate</a>
-    <select id="mode">
-      <option value="worst">predicted worst first</option>
-      <option value="best">predicted best first</option>
-      <option value="uncertain">most uncertain first</option>
-      <option value="default">oldest first</option>
-    </select>
-    <button class="btn" id="b-all">select all</button>
-    <button class="btn" id="b-none">clear</button>
-    <button class="btn nay" id="b-nay">Nay selected <kbd>a</kbd></button>
-    <button class="btn maybe" id="b-maybe">Maybe <kbd>w</kbd></button>
-    <button class="btn yay" id="b-yay">Yay selected <kbd>d</kbd></button>
-    <button class="btn" id="b-next">next page <kbd>n</kbd></button>
-    <button class="btn" id="b-train">retrain model</button>
+    <div class="group">
+      <select id="mode" aria-label="Sort order">
+        <option value="worst">predicted worst first</option>
+        <option value="best">predicted best first</option>
+        <option value="uncertain">most uncertain first</option>
+        <option value="default">oldest first</option>
+      </select>
+    </div>
+    <div class="sep" role="presentation"></div>
+    <div class="group">
+      <button class="btn" id="b-all">Select all</button>
+      <button class="btn" id="b-none">Clear</button>
+    </div>
+    <div class="sep" role="presentation"></div>
+    <div class="group">
+      <button class="btn btn-nay" id="b-nay" disabled>Nay <kbd>a</kbd></button>
+      <button class="btn btn-maybe" id="b-maybe" disabled>Maybe <kbd>w</kbd></button>
+      <button class="btn btn-yay" id="b-yay" disabled>Yay <kbd>d</kbd></button>
+    </div>
+    <div class="sep" role="presentation"></div>
+    <div class="group">
+      <button class="btn" id="b-prev" aria-label="Previous page" disabled>Prev</button>
+      <span id="page-label">page 1 of 1</span>
+      <button class="btn" id="b-next" aria-label="Next page">Next <kbd>n</kbd></button>
+    </div>
+    <div class="sep" role="presentation"></div>
     <span id="info"></span>
+    <div id="train-group">
+      <span class="badge" id="train-badge" hidden></span>
+      <button class="btn btn-primary" id="b-train">Retrain model</button>
+    </div>
   </div>
   <div id="grid"></div>
+<script src="/static/app.js"></script>
 <script>
-const LIMIT = 60;
-let sessionId = null, offset = 0, items = [], selected = new Set();
-const $ = id => document.getElementById(id);
+initNav('grid');
+helpOverlay([
+  ['a', 'Label selected images Nay'],
+  ['w', 'Label selected images Maybe'],
+  ['d', 'Label selected images Yay'],
+  ['n', 'Next page'],
+  ['?', 'Toggle this help'],
+]);
 
-async function api(path, body) {
-  const res = await fetch(path, body === undefined ? {} : {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(body)});
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
+const LIMIT = 60;
+let sessionId = null, offset = 0, total = 0, items = [], selected = new Set();
+const $ = id => document.getElementById(id);
 
 async function load() {
   const data = await api(`/api/grid?mode=${$('mode').value}&limit=${LIMIT}&offset=${offset}`);
-  items = data.items; selected.clear();
+  items = data.items; total = data.total; selected.clear();
   const g = $('grid');
-  g.innerHTML = '';
-  if (!items.length) { g.innerHTML = '<div id="empty">nothing unrated here 🎉</div>'; }
+  g.textContent = '';
+  if (!items.length) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+    const h = document.createElement('h2');
+    h.textContent = 'Nothing unrated here';
+    const p = document.createElement('p');
+    p.textContent = 'Every image in this view has a label. Rate more images to keep teaching the model.';
+    const cta = document.createElement('a');
+    cta.className = 'btn btn-primary';
+    cta.href = '/';
+    cta.textContent = 'Go rate images';
+    empty.append(h, p, cta);
+    g.appendChild(empty);
+  }
   for (const it of items) {
     const c = document.createElement('div');
     c.className = 'cell'; c.dataset.id = it.id;
-    c.innerHTML = `<img loading="lazy" src="/thumb/${it.id}">` +
-      (it.score != null ? `<span class="score">${it.score.toFixed(2)}</span>` : '');
-    c.onclick = () => { const id = it.id;
+    const img = document.createElement('img');
+    img.loading = 'lazy';
+    img.src = '/thumb/' + it.id;
+    img.alt = 'image ' + it.id;
+    c.appendChild(img);
+    if (it.score != null) {
+      const s = document.createElement('span');
+      s.className = 'score';
+      s.title = "model's predicted like-probability";
+      s.textContent = it.score.toFixed(2);
+      c.appendChild(s);
+    }
+    c.addEventListener('click', () => {
+      const id = it.id;
       selected.has(id) ? selected.delete(id) : selected.add(id);
-      c.classList.toggle('sel'); updateInfo(); };
+      c.classList.toggle('sel'); updateInfo();
+    });
     g.appendChild(c);
   }
-  $('info').textContent = `${data.total.toLocaleString()} unrated · showing ${offset + 1}–${offset + items.length}`;
+  const page = Math.floor(offset / LIMIT) + 1;
+  const pages = Math.max(1, Math.ceil(total / LIMIT));
+  $('page-label').textContent = `page ${page} of ${pages}`;
+  $('b-prev').disabled = offset <= 0;
+  $('b-next').disabled = offset + LIMIT >= total;
   updateInfo();
 }
 
 function updateInfo() {
-  const base = $('info').textContent.split(' · sel')[0];
-  $('info').textContent = base + (selected.size ? ` · selected: ${selected.size}` : '');
+  const shown = items.length
+    ? ` · showing ${offset + 1}–${offset + items.length}` : '';
+  $('info').textContent = `${total.toLocaleString()} unrated${shown}` +
+    (selected.size ? ` · selected: ${selected.size}` : '');
+  const none = !selected.size;
+  $('b-nay').disabled = none;
+  $('b-maybe').disabled = none;
+  $('b-yay').disabled = none;
 }
 
 async function bulk(value) {
   if (!selected.size) return;
-  await api('/api/labels/bulk', {image_ids: [...selected], value, session_id: sessionId});
+  const n = selected.size;
+  try {
+    await api('/api/labels/bulk', {image_ids: [...selected], value, session_id: sessionId});
+  } catch (e) { toast('Labeling failed: ' + e.message); return; }
+  offset = 0;                                  // back to page 1 after bulk labeling
+  toast(`Labeled ${n} image${n === 1 ? '' : 's'}`, {action: {label: 'Undo', onClick: async () => {
+    try {
+      for (let i = 0; i < n; i++) await api('/api/undo', {session_id: sessionId});
+    } catch (e) { toast('Undo failed: ' + e.message); }
+    load();
+  }}});
   load();
 }
 
-$('b-all').onclick = () => { selected = new Set(items.map(i => i.id));
-  document.querySelectorAll('.cell').forEach(c => c.classList.add('sel')); updateInfo(); };
-$('b-none').onclick = () => { selected.clear();
-  document.querySelectorAll('.cell').forEach(c => c.classList.remove('sel')); updateInfo(); };
-$('b-nay').onclick = () => bulk(0);
-$('b-maybe').onclick = () => bulk(0.5);
-$('b-yay').onclick = () => bulk(1);
-$('b-next').onclick = () => { offset += LIMIT; load(); };
-$('mode').onchange = () => { offset = 0; load(); };
-$('b-train').onclick = async () => {
-  $('b-train').textContent = 'training…';
+function nextPage() { if (offset + LIMIT < total) { offset += LIMIT; load(); } }
+function prevPage() { if (offset > 0) { offset = Math.max(0, offset - LIMIT); load(); } }
+
+$('b-all').addEventListener('click', () => {
+  selected = new Set(items.map(i => i.id));
+  document.querySelectorAll('.cell').forEach(c => c.classList.add('sel'));
+  updateInfo();
+});
+$('b-none').addEventListener('click', () => {
+  selected.clear();
+  document.querySelectorAll('.cell').forEach(c => c.classList.remove('sel'));
+  updateInfo();
+});
+$('b-nay').addEventListener('click', () => bulk(0));
+$('b-maybe').addEventListener('click', () => bulk(0.5));
+$('b-yay').addEventListener('click', () => bulk(1));
+$('b-next').addEventListener('click', nextPage);
+$('b-prev').addEventListener('click', prevPage);
+$('mode').addEventListener('change', () => { offset = 0; load(); });
+
+function setTrainBadge(kind, text) {
+  const b = $('train-badge');
+  b.className = 'badge' + (kind ? ' ' + kind : '');
+  b.textContent = text;
+  b.hidden = !text;
+}
+
+$('b-train').addEventListener('click', async () => {
+  $('b-train').disabled = true;
+  setTrainBadge('busy', 'Training…');
   try {
     const m = await api('/api/train_taste', {});
-    alert(`trained ${m.model}\nval accuracy: ${m.val_accuracy}\nval AUC: ${m.val_auc}\n(on ${m.val_n} held-out images in ${m.val_clusters} clusters)`);
+    const acc = m.val_accuracy != null ? Math.round(m.val_accuracy * 100) + '%' : 'n/a';
+    const auc = m.val_auc != null ? Number(m.val_auc).toFixed(2) : 'n/a';
+    setTrainBadge('ok', `${m.model} trained`);
+    toast(`${m.model} trained — val accuracy ${acc}, AUC ${auc} ` +
+          `(${m.val_n} held-out images in ${m.val_clusters} clusters)`);
     offset = 0; load();
-  } catch (e) { alert('training failed: ' + e.message); }
-  $('b-train').textContent = 'retrain model';
-};
+  } catch (e) {
+    setTrainBadge('fail', 'Training failed');
+    toast('Training failed: ' + e.message);
+  }
+  $('b-train').disabled = false;
+});
+
 document.addEventListener('keydown', e => {
-  if (e.key === 'a') bulk(0);
+  if (helpOverlayOpen()) return;
+  if (e.key === 'a') bulk(0);          // bulk() no-ops when nothing is selected
   else if (e.key === 'w') bulk(0.5);
   else if (e.key === 'd') bulk(1);
-  else if (e.key === 'n') { offset += LIMIT; load(); }
+  else if (e.key === 'n') nextPage();
 });
 
 (async () => {

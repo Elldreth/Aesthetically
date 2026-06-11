@@ -44,6 +44,16 @@
     }, 1200);
   }
 
+  function canvasExtract(img) {
+    // Pulls exactly the displayed pixels with NO extra network request.
+    // Throws on tainted (cross-origin, non-CORS) images — caller falls back.
+    const c = document.createElement('canvas');
+    c.width = img.naturalWidth;
+    c.height = img.naturalHeight;
+    c.getContext('2d').drawImage(img, 0, 0);
+    return c.toDataURL('image/png').split(',')[1]; // throws if tainted
+  }
+
   document.addEventListener('keydown', (e) => {
     if (!hovered || e.repeat || e.ctrlKey || e.altKey || e.metaKey) return;
     const tag = (e.target.tagName || '').toLowerCase();
@@ -52,13 +62,19 @@
     if (value === undefined) return;
 
     const imageUrl = hovered.currentSrc || hovered.src;
-    if (!imageUrl || imageUrl.startsWith('data:')) {
+    if (!imageUrl || !/^https?:/.test(imageUrl)) {
       feedback('no fetchable URL', false);
       return;
     }
+    let dataB64 = null;
+    try {
+      dataB64 = canvasExtract(hovered);
+    } catch {
+      /* tainted canvas — worker will fetch instead */
+    }
     badge.textContent = '…';
     chrome.runtime.sendMessage(
-      { type: 'rate', imageUrl, pageUrl: location.href, value },
+      { type: 'rate', imageUrl, pageUrl: location.href, value, dataB64 },
       (res) => {
         if (res && res.ok) {
           feedback(value === 1 ? 'saved 👍' : value === 0.5 ? 'saved 🤔' : 'saved 👎', true);

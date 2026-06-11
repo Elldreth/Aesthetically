@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import os
 import sqlite3
+import threading
 import time
 
 import numpy as np
@@ -22,19 +23,24 @@ MODEL_NAME = os.environ.get("AESTH_EMBED_MODEL", "google/siglip2-so400m-patch16-
 _model = None
 _processor = None
 _device = None
+_load_lock = threading.Lock()
 
 
 def _load_model():
     global _model, _processor, _device
     if _model is not None:
         return
-    import torch
-    from transformers import AutoModel, AutoProcessor
+    with _load_lock:
+        if _model is not None:
+            return
+        import torch
+        from transformers import AutoModel, AutoProcessor
 
-    _device = "cuda" if torch.cuda.is_available() else "cpu"
-    dtype = torch.float16 if _device == "cuda" else torch.float32
-    _model = AutoModel.from_pretrained(MODEL_NAME, torch_dtype=dtype).to(_device).eval()
-    _processor = AutoProcessor.from_pretrained(MODEL_NAME)
+        _device = "cuda" if torch.cuda.is_available() else "cpu"
+        dtype = torch.float16 if _device == "cuda" else torch.float32
+        model = AutoModel.from_pretrained(MODEL_NAME, torch_dtype=dtype).to(_device).eval()
+        _processor = AutoProcessor.from_pretrained(MODEL_NAME)
+        _model = model  # assign last: _model set means fully ready
 
 
 def embed_pil(images: list[Image.Image]) -> np.ndarray:

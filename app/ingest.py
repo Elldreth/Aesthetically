@@ -10,9 +10,16 @@ import sqlite3
 from io import BytesIO
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
+
+# Pixel-flood guard: a tiny crafted PNG can expand to gigapixels in RAM.
+# 64MP comfortably covers SDXL hi-res outputs; PIL raises DecompressionBombError
+# at 2x this value and warns at 1x — we want the hard error, so set it directly.
+Image.MAX_IMAGE_PIXELS = 64_000_000
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
+
+DECODE_ERRORS = (UnidentifiedImageError, Image.DecompressionBombError, OSError, ValueError)
 
 # A1111/SD-webui "parameters" text chunk, best effort:
 #   <prompt>
@@ -66,10 +73,13 @@ def register_bytes(conn: sqlite3.Connection, data: bytes, *,
 
     gen_meta (prompt/model_hash/seed/...) overrides anything parsed from the
     bytes — the caller that generated the image knows better than PNG chunks.
+
+    Raises one of DECODE_ERRORS for undecodable/oversized images.
     """
     import hashlib as _hashlib
+    import sqlite3 as _sqlite3
 
-    info = inspect_image(data)
+    info = inspect_image(data)  # raises DECODE_ERRORS on bad input
     if gen_meta:
         info.update({k: v for k, v in gen_meta.items() if v is not None})
     sha = _hashlib.sha256(data).hexdigest()
@@ -82,19 +92,27 @@ def register_bytes(conn: sqlite3.Connection, data: bytes, *,
         ext = (info.get("format") or "png").lower()
         path = store_dir / f"{sha[:16]}.{ext}"
         path.write_bytes(data)
-        cur = conn.execute(
-            """INSERT INTO images (sha256, width, height, format, file_size,
-                                   prompt, negative_prompt, model_hash, seed, gen_params_raw)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (sha, info["width"], info["height"], info["format"], len(data),
-             info.get("prompt"), info.get("negative_prompt"),
-             info.get("model_hash"), info.get("seed"), info.get("gen_params_raw")),
-        )
-        image_id, created = cur.lastrowid, True
-        conn.execute(
-            "INSERT INTO image_sources (image_id, kind, location) VALUES (?, 'local', ?)",
-            (image_id, str(path.resolve())),
-        )
+        try:
+            cur = conn.execute(
+                """INSERT INTO images (sha256, width, height, format, file_size,
+                                       prompt, negative_prompt, model_hash, seed, gen_params_raw)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (sha, info["width"], info["height"], info["format"], len(data),
+                 info.get("prompt"), info.get("negative_prompt"),
+                 info.get("model_hash"), info.get("seed"), info.get("gen_params_raw")),
+            )
+        except _sqlite3.IntegrityError:
+            # concurrent ingest of the same bytes won the race — adopt its row
+            row = conn.execute("SELECT id FROM images WHERE sha256 = ?", (sha,)).fetchone()
+            if row is None:
+                raise
+            image_id, created = row["id"], False
+        else:
+            image_id, created = cur.lastrowid, True
+            conn.execute(
+                "INSERT INTO image_sources (image_id, kind, location) VALUES (?, 'local', ?)",
+                (image_id, str(path.resolve())),
+            )
     for url in {u for u in (image_url, page_url) if u}:
         conn.execute(
             """INSERT INTO image_sources (image_id, kind, location) VALUES (?, 'url', ?)

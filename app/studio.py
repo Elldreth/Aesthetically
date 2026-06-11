@@ -20,13 +20,26 @@ from .scorer import latest_head, score_images, store_embedding_and_score
 
 GEN_DIR = DATA_DIR / "generated"
 
+_shared_client: ArtifexClient | None = None
+
+
+def _get_client(client: ArtifexClient | None) -> ArtifexClient:
+    """One long-lived process client (httpx.Client is thread-safe) — callers
+    that pass their own client keep ownership of it."""
+    global _shared_client
+    if client is not None:
+        return client
+    if _shared_client is None:
+        _shared_client = ArtifexClient()
+    return _shared_client
+
 
 def best_of_n(prompt: str, n: int = 4, model: str | None = None,
               size: str = "832x1216", loras: list | None = None,
               client: ArtifexClient | None = None) -> list[dict]:
     """Generate n seeds of a prompt, ingest each with authoritative metadata,
     score with the taste head, return ranked best-first."""
-    client = client or ArtifexClient()
+    client = _get_client(client)
     head = latest_head()
     results = []
     for _ in range(n):
@@ -114,13 +127,15 @@ def build_taste_dataset(k: int = 40) -> list[dict]:
 def train_taste_lora(name: str, k: int = 40, steps: int = 1200, rank: int = 16,
                      lr: float = 1e-4, client: ArtifexClient | None = None) -> dict:
     """Submit a style-LoRA job to Artifex from the curated taste dataset."""
-    client = client or ArtifexClient()
+    client = _get_client(client)
     dataset = build_taste_dataset(k)
     if len(dataset) < 10:
         raise RuntimeError(f"only {len(dataset)} usable liked images — rate more first")
+    from pathlib import Path
+
     images = []
     for c in dataset:
-        raw = open(c["path"], "rb").read()
+        raw = Path(c["path"]).read_bytes()
         images.append("data:image/png;base64," + base64.b64encode(raw).decode())
 
     config = {
@@ -155,7 +170,7 @@ def train_taste_lora(name: str, k: int = 40, steps: int = 1200, rank: int = 16,
 
 def poll_run(run_id: int, client: ArtifexClient | None = None) -> dict:
     """Proxy Artifex job state into training_runs; returns merged status."""
-    client = client or ArtifexClient()
+    client = _get_client(client)
     with get_conn() as db:
         run = db.execute("SELECT * FROM training_runs WHERE id = ?", (run_id,)).fetchone()
         if not run:
@@ -207,7 +222,7 @@ def eval_lora(run_id: int, lora_name: str | None = None,
     Metrics per arm: taste (head), adherence (SigLIP text-image cosine),
     fidelity (cosine to the training-set centroid), diversity (1 - mean
     pairwise sim across seeds). Rows land in eval_results."""
-    client = client or ArtifexClient()
+    client = _get_client(client)
     head = latest_head()
     if head is None:
         raise RuntimeError("no taste head trained")
