@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>imghotornot</title>
+<style>
+  :root {
+    --bg: #14151a; --panel: #1e2027; --text: #d8dae2; --dim: #7a7e8c;
+    --nay: #e05c5c; --maybe: #d9a648; --yay: #57b368;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, sans-serif;
+         height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+  #hud { display: flex; gap: 18px; align-items: baseline; padding: 8px 14px;
+         background: var(--panel); font-variant-numeric: tabular-nums; }
+  #hud .big { font-size: 16px; font-weight: 600; }
+  #hud .dim { color: var(--dim); }
+  #bar { height: 3px; background: #2a2d36; }
+  #bar > div { height: 100%; width: 0; background: #5b8def; transition: width .2s; }
+  #stage { flex: 1; display: flex; align-items: center; justify-content: center;
+           min-height: 0; padding: 10px; position: relative; }
+  #stage img { max-width: 100%; max-height: 100%; object-fit: contain;
+               border-radius: 4px; }
+  #meta { position: absolute; left: 14px; bottom: 10px; right: 14px; color: var(--dim);
+          font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #flash { position: absolute; top: 16px; right: 18px; font-size: 22px; font-weight: 700;
+           opacity: 0; transition: opacity .4s; }
+  #buttons { display: flex; gap: 8px; padding: 10px 14px 14px; background: var(--panel); }
+  button { flex: 1; padding: 12px 0; font-size: 15px; font-weight: 600; border: 0;
+           border-radius: 6px; cursor: pointer; color: #16171c; }
+  button:active { transform: translateY(1px); }
+  #b-nay { background: #e05c5c; } #b-maybe { background: #d9a648; }
+  #b-yay { background: #57b368; }
+  #b-skip, #b-excl, #b-undo { flex: .45; background: #3a3e4a; color: var(--text); font-weight: 400; }
+  #done { text-align: center; font-size: 20px; color: var(--dim); }
+  kbd { background: #2a2d36; border-radius: 3px; padding: 0 5px; font-size: 12px; }
+</style>
+</head>
+<body>
+  <div id="hud">
+    <span class="big" id="h-pos">–</span>
+    <span class="dim" id="h-counts">loading…</span>
+    <span class="dim" id="h-session"></span>
+  </div>
+  <div id="bar"><div id="bar-fill"></div></div>
+  <div id="stage">
+    <img id="view" alt="" hidden>
+    <div id="done" hidden>All caught up — nothing left to rate 🎉</div>
+    <div id="meta"></div>
+    <div id="flash"></div>
+  </div>
+  <div id="buttons">
+    <button id="b-undo" title="undo (z)">⟲ <kbd>z</kbd></button>
+    <button id="b-nay">Nay <kbd>a</kbd></button>
+    <button id="b-maybe">Maybe <kbd>w</kbd></button>
+    <button id="b-yay">Yay <kbd>d</kbd></button>
+    <button id="b-skip" title="skip (space)">Skip <kbd>␣</kbd></button>
+    <button id="b-excl" title="exclude: corrupt/off-topic (x)">✕ <kbd>x</kbd></button>
+  </div>
+<script>
+const PRELOAD = 5;
+let sessionId = null;
+let queue = [];          // [{id, width, height, prompt, model_hash}]
+let history = [];        // undone-able: items we labeled, most recent last
+let stats = {};
+const $ = id => document.getElementById(id);
+
+async function api(path, body) {
+  const res = await fetch(path, body === undefined ? {} : {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+function preload() {
+  queue.slice(1, 1 + PRELOAD).forEach(it => { (new Image()).src = '/img/' + it.id; });
+}
+
+function show() {
+  const it = queue[0];
+  $('view').hidden = !it; $('done').hidden = !!it;
+  if (!it) { $('meta').textContent = ''; return; }
+  $('view').src = '/img/' + it.id;
+  const bits = [];
+  if (it.width) bits.push(it.width + '×' + it.height);
+  if (it.model_hash) bits.push('model ' + it.model_hash);
+  if (it.prompt) bits.push(it.prompt);
+  $('meta').textContent = bits.join('  ·  ');
+  preload();
+}
+
+function flash(txt, color) {
+  const f = $('flash');
+  f.textContent = txt; f.style.color = color; f.style.opacity = 1;
+  setTimeout(() => f.style.opacity = 0, 250);
+}
+
+async function refill() {
+  if (queue.length > PRELOAD) return;
+  const data = await api('/api/queue?limit=40');
+  const have = new Set(queue.map(i => i.id));
+  const recent = new Set(history.slice(-20).map(h => h.item.id));
+  for (const it of data.items)
+    if (!have.has(it.id) && !recent.has(it.id)) queue.push(it);
+}
+
+async function refreshStats() {
+  stats = await api('/api/stats?session_id=' + sessionId);
+  const done = stats.total - stats.unlabeled;
+  $('h-pos').textContent = done.toLocaleString() + ' / ' + stats.total.toLocaleString();
+  $('h-counts').textContent =
+    '👍 ' + stats.liked + '   🤔 ' + stats.maybe + '   👎 ' + stats.disliked +
+    (stats.excluded ? '   ✕ ' + stats.excluded : '');
+  $('h-session').textContent = 'session: ' + (stats.session_count || 0) +
+    (stats.session_per_min ? ' · ' + stats.session_per_min + '/min' : '');
+  $('bar-fill').style.width = (stats.total ? 100 * done / stats.total : 0) + '%';
+}
+
+async function rate(value) {
+  const it = queue.shift();
+  if (!it) return;
+  show();                                   // advance immediately; network follows
+  try {
+    if (value === 'skip') { queue.push(it); }
+    else if (value === 'exclude') {
+      const r = await api('/api/exclude', {image_id: it.id, session_id: sessionId});
+      history.push({item: it});
+      flash('✕', '#7a7e8c');
+    } else {
+      const r = await api('/api/label', {image_id: it.id, value, session_id: sessionId});
+      history.push({item: it});
+      flash(value === 1 ? '👍' : value === 0.5 ? '🤔' : '👎',
+            value === 1 ? '#57b368' : value === 0.5 ? '#d9a648' : '#e05c5c');
+    }
+  } catch (e) { queue.unshift(it); show(); alert('save failed: ' + e.message); return; }
+  refreshStats(); refill();
+}
+
+async function undo() {
+  if (!history.length) return;
+  try {
+    await api('/api/undo', {session_id: sessionId});
+    const {item} = history.pop();
+    queue.unshift(item);
+    show(); flash('⟲', '#5b8def'); refreshStats();
+  } catch (e) { alert('undo failed: ' + e.message); }
+}
+
+document.addEventListener('keydown', e => {
+  if (e.repeat) return;
+  if (e.key === 'd') rate(1);
+  else if (e.key === 'w') rate(0.5);
+  else if (e.key === 'a') rate(0);
+  else if (e.key === ' ') { e.preventDefault(); rate('skip'); }
+  else if (e.key === 'x') rate('exclude');
+  else if (e.key === 'z') undo();
+});
+$('b-yay').onclick = () => rate(1);
+$('b-maybe').onclick = () => rate(0.5);
+$('b-nay').onclick = () => rate(0);
+$('b-skip').onclick = () => rate('skip');
+$('b-excl').onclick = () => rate('exclude');
+$('b-undo').onclick = undo;
+
+(async () => {
+  sessionId = (await api('/api/sessions', {name: null})).session_id;
+  await refill(); show(); refreshStats();
+})();
+</script>
+</body>
+</html>

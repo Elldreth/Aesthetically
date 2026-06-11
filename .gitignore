@@ -1,0 +1,21 @@
+# environments
+.venv/
+venv/
+__pycache__/
+
+# database & runtime data
+data/
+
+# image corpora (labels live in the DB, files stay local)
+dislike/
+found/
+input/
+liked_images/
+matches/
+maybes/
+
+# legacy model artifact
+best.pt
+
+# local Claude Code settings
+.claude/settings.local.json
