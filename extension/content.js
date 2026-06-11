@@ -10,12 +10,32 @@
   badge.textContent = 'a 👎 · w 🤔 · d 👍';
   document.documentElement.appendChild(badge);
 
-  function setHover(img) {
-    if (hovered) hovered.classList.remove('aesthetically-hover');
-    hovered = img;
-    if (img) {
-      img.classList.add('aesthetically-hover');
-      const r = img.getBoundingClientRect();
+  const BG_URL_RE = /url\(["']?(.*?)["']?\)/;
+
+  // SPAs love transparent overlays on top of images, so the <img> never
+  // receives mouse events — look through the hit-test stack instead. Also
+  // accepts elements drawn with CSS background-image.
+  function findImageAt(x, y) {
+    for (const el of document.elementsFromPoint(x, y)) {
+      if (el instanceof HTMLImageElement &&
+          el.naturalWidth >= MIN_SIZE && el.naturalHeight >= MIN_SIZE) {
+        return { el, url: el.currentSrc || el.src, isImg: true };
+      }
+      if (el instanceof HTMLElement &&
+          el.clientWidth >= MIN_SIZE && el.clientHeight >= MIN_SIZE) {
+        const m = BG_URL_RE.exec(getComputedStyle(el).backgroundImage || '');
+        if (m) return { el, url: new URL(m[1], location.href).href, isImg: false };
+      }
+    }
+    return null;
+  }
+
+  function setHover(hit) {
+    if (hovered) hovered.el.classList.remove('aesthetically-hover');
+    hovered = hit;
+    if (hit) {
+      hit.el.classList.add('aesthetically-hover');
+      const r = hit.el.getBoundingClientRect();
       badge.style.left = Math.max(4, r.left + 6) + 'px';
       badge.style.top = Math.max(4, r.top + 6) + 'px';
       badge.style.display = 'block';
@@ -24,15 +44,14 @@
     }
   }
 
-  document.addEventListener('mouseover', (e) => {
-    const img = e.target instanceof HTMLImageElement ? e.target : null;
-    if (img && img.naturalWidth >= MIN_SIZE && img.naturalHeight >= MIN_SIZE) {
-      setHover(img);
-    }
-  }, { passive: true });
-
-  document.addEventListener('mouseout', (e) => {
-    if (e.target === hovered) setHover(null);
+  let raf = 0;
+  document.addEventListener('mousemove', (e) => {
+    if (raf) return;                      // throttle to one hit-test per frame
+    raf = requestAnimationFrame(() => {
+      raf = 0;
+      const hit = findImageAt(e.clientX, e.clientY);
+      if (hit?.el !== hovered?.el) setHover(hit);
+    });
   }, { passive: true });
 
   function feedback(text, ok) {
@@ -61,15 +80,16 @@
     const value = { a: 0, w: 0.5, d: 1 }[e.key];
     if (value === undefined) return;
 
-    const imageUrl = hovered.currentSrc || hovered.src;
+    const imageUrl = hovered.url;
     if (!imageUrl || !/^(https?|file):/.test(imageUrl)) {
       feedback('no fetchable URL', false);
       return;
     }
     let dataB64 = null;
-    if (!imageUrl.startsWith('file:')) {  // file: origins always taint the canvas
+    // canvas only works for real <img> elements; file: origins always taint
+    if (hovered.isImg && !imageUrl.startsWith('file:')) {
       try {
-        dataB64 = canvasExtract(hovered);
+        dataB64 = canvasExtract(hovered.el);
       } catch {
         /* tainted canvas — worker will fetch instead */
       }
