@@ -81,6 +81,40 @@ def _clean_path(raw: str) -> Path:
     return Path(raw.strip().strip('"').strip("'").strip())
 
 
+def _thumb_for(src: str) -> Path:
+    """Cached 320px WebP thumbnail for a source file, keyed by path+mtime+size.
+
+    Shared by /thumb and the scan grid so multi-megabyte originals are never
+    shipped to the browser to be squeezed into a grid cell. draft() lets the
+    JPEG decoder load big files at a reduced scale — fast and low-memory.
+    Raises DECODE_ERRORS on an unreadable source.
+    """
+    import hashlib
+
+    from PIL import Image
+
+    st = os.stat(src)
+    key = hashlib.sha1(
+        f"{os.path.abspath(src)}|{st.st_mtime_ns}|{st.st_size}".encode()
+    ).hexdigest()[:20]
+    thumb_dir = DATA_DIR / "thumbs"
+    thumb_path = thumb_dir / f"{key}.webp"
+    if thumb_path.is_file():
+        return thumb_path
+    thumb_dir.mkdir(parents=True, exist_ok=True)
+    tmp_path = thumb_dir / f".{key}.{os.getpid()}.tmp"
+    try:
+        with Image.open(src) as img:
+            img.draft("RGB", (640, 640))      # reduced-scale JPEG decode (no-op for PNG)
+            img = img.convert("RGB")
+            img.thumbnail((320, 320))
+            img.save(tmp_path, "WEBP", quality=80)
+        os.replace(tmp_path, thumb_path)       # atomic: concurrent firsts can't collide
+    finally:
+        tmp_path.unlink(missing_ok=True)
+    return thumb_path
+
+
 class LabelIn(BaseModel):
     image_id: int
     value: float  # 1 = yay, 0.5 = maybe, 0 = nay
@@ -187,32 +221,18 @@ def queue(limit: int = 20, mode: str = "default"):
 @app.get("/thumb/{image_id}")
 def thumbnail(image_id: int):
     """Cached 320px WebP thumbnails for the grid view."""
-    thumb_dir = DATA_DIR / "thumbs"
-    thumb_path = thumb_dir / f"{image_id}.webp"
-    if not thumb_path.is_file():
-        with conn() as db:
-            rows = db.execute(
-                "SELECT location FROM image_sources WHERE image_id = ? AND kind = 'local'",
-                (image_id,),
-            ).fetchall()
-        src = next((r["location"] for r in rows if os.path.isfile(r["location"])), None)
-        if not src:
-            raise HTTPException(404, "no readable local source for image")
-        from PIL import Image
-
-        thumb_dir.mkdir(parents=True, exist_ok=True)
-        tmp_path = thumb_dir / f".{image_id}.{os.getpid()}.tmp"
-        try:
-            with Image.open(src) as img:
-                img = img.convert("RGB")
-                img.thumbnail((320, 320))
-                img.save(tmp_path, "WEBP", quality=80)
-            os.replace(tmp_path, thumb_path)  # atomic: concurrent firsts can't collide
-        except DECODE_ERRORS:
-            raise HTTPException(415, "source image is unreadable")
-        finally:
-            tmp_path.unlink(missing_ok=True)
-    return FileResponse(thumb_path, media_type="image/webp")
+    with conn() as db:
+        rows = db.execute(
+            "SELECT location FROM image_sources WHERE image_id = ? AND kind = 'local'",
+            (image_id,),
+        ).fetchall()
+    src = next((r["location"] for r in rows if os.path.isfile(r["location"])), None)
+    if not src:
+        raise HTTPException(404, "no readable local source for image")
+    try:
+        return FileResponse(_thumb_for(src), media_type="image/webp")
+    except DECODE_ERRORS:
+        raise HTTPException(415, "source image is unreadable")
 
 
 _SCORED_IMAGES = """
@@ -695,14 +715,17 @@ def scan_results(limit: int = 60, offset: int = 0):
 
 @app.get("/scan/img/{job_id}/{index}")
 def scan_image(job_id: int, index: int):
-    """Serve a scanned file by (job_id, index). A stale job_id 409s so a
-    lingering page can never show another scan's image."""
+    """Serve a scanned file's thumbnail by (job_id, index). A stale job_id
+    409s so a lingering page can never show another scan's image."""
     if job_id != _scan_job.get("job_id"):
         raise HTTPException(409, "these results are stale — rescan the folder")
     results = _scan_job.get("results", [])
     if not (0 <= index < len(results)):
         raise HTTPException(404)
-    return FileResponse(results[index]["path"])
+    try:
+        return FileResponse(_thumb_for(results[index]["path"]), media_type="image/webp")
+    except DECODE_ERRORS:
+        raise HTTPException(415, "source image is unreadable")
 
 
 class ScanExportIn(BaseModel):
