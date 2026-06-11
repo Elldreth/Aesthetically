@@ -50,6 +50,35 @@ def _transfer(src: str, dst: Path, mode: str) -> None:
         shutil.copy2(src, dst)
 
 
+def run_select(out: Path, *, top: int | None = None, min_score: float | None = None,
+               buckets: bool = False, unlabeled_only: bool = False,
+               mode: str = "copy", progress: dict | None = None) -> dict:
+    """Shared by the CLI and the web UI. Returns a summary dict."""
+    progress = progress if progress is not None else {}
+    db = get_conn()
+    cands = _candidates(db, unlabeled_only)
+    db.close()
+    if top:
+        cands = cands[:top]
+    elif min_score is not None:
+        cands = [c for c in cands if c["score"] >= min_score]
+    progress.update(total=len(cands), done=0, state="transferring")
+    n = 0
+    for c in cands:
+        name = f"{c['score']:.3f}_{c['id']}{Path(c['path']).suffix.lower()}"
+        if buckets:
+            bucket = f"{min(int(c['score'] * 10), 9) / 10:.1f}+"
+            dst = out / bucket / name
+        else:
+            dst = out / name
+        _transfer(c["path"], dst, mode)
+        n += 1
+        progress["done"] = n
+    progress["state"] = "done"
+    return {"count": n, "out": str(out),
+            "min_score_taken": round(cands[-1]["score"], 3) if cands else None}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--out", required=True, help="destination folder")
@@ -69,27 +98,11 @@ def main() -> None:
     if not (args.top or args.min_score or args.buckets):
         ap.error("pick --top N, --min-score X, or --buckets")
 
-    db = get_conn()
-    cands = _candidates(db, args.unlabeled_only)
-    db.close()
-    if args.top:
-        cands = cands[: args.top]
-    elif args.min_score is not None:
-        cands = [c for c in cands if c["score"] >= args.min_score]
-
-    out = Path(args.out)
-    n = 0
-    for c in cands:
-        name = f"{c['score']:.3f}_{c['id']}{Path(c['path']).suffix.lower()}"
-        if args.buckets:
-            bucket = f"{min(int(c['score'] * 10), 9) / 10:.1f}+"
-            dst = out / bucket / name
-        else:
-            dst = out / name
-        _transfer(c["path"], dst, args.mode)
-        n += 1
-    print(f"{args.mode}d {n} images -> {out}"
-          + (f" (score >= {cands[-1]['score']:.3f})" if cands else ""))
+    res = run_select(Path(args.out), top=args.top, min_score=args.min_score,
+                     buckets=args.buckets, unlabeled_only=args.unlabeled_only,
+                     mode=args.mode)
+    print(f"{args.mode}d {res['count']} images -> {res['out']}"
+          + (f" (score >= {res['min_score_taken']})" if res["min_score_taken"] else ""))
 
 
 if __name__ == "__main__":

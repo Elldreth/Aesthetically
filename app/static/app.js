@@ -102,6 +102,12 @@ function initNav(activeTab) {
   add.title = 'Register a local image folder (files stay in place)';
   add.addEventListener('click', _openAddFolder);
   right.appendChild(add);
+  const exp = document.createElement('button');
+  exp.className = 'btn btn-quiet';
+  exp.textContent = 'Export best';
+  exp.title = 'Copy the highest-predicted images to a folder';
+  exp.addEventListener('click', _openExportBest);
+  right.appendChild(exp);
   const help = document.createElement('button');
   help.className = 'btn btn-quiet icon-btn';
   help.setAttribute('aria-label', 'Keyboard shortcuts');
@@ -234,6 +240,129 @@ function _openAddFolder() {
   backdrop.appendChild(panel);
   document.body.appendChild(backdrop);
   input.focus();
+}
+
+/* ---------- export-best dialog ---------- */
+
+function _openExportBest() {
+  const backdrop = document.createElement('div');
+  backdrop.className = 'overlay-backdrop';
+  backdrop.addEventListener('click', e => { if (e.target === backdrop) backdrop.remove(); });
+
+  const panel = document.createElement('div');
+  panel.className = 'overlay-panel';
+  panel.setAttribute('role', 'dialog');
+  panel.setAttribute('aria-modal', 'true');
+  panel.setAttribute('aria-label', 'Export best images');
+
+  const h = document.createElement('h2');
+  h.textContent = 'Export best images';
+  const p = document.createElement('p');
+  p.className = 'dim';
+  p.style.marginBottom = '12px';
+  p.textContent = 'Copies the highest-predicted images (named score_id.ext) '
+    + 'into a folder on this machine. Originals are never touched.';
+
+  const mkRow = (labelText, control) => {
+    const row = document.createElement('label');
+    row.style.cssText = 'display:flex;align-items:center;gap:8px;margin:8px 0;font-size:13px';
+    const span = document.createElement('span');
+    span.style.cssText = 'min-width:110px;color:var(--text-dim)';
+    span.textContent = labelText;
+    row.append(span, control);
+    return row;
+  };
+
+  const out = document.createElement('input');
+  out.placeholder = 'D:\\keepers';
+  out.style.flex = '1';
+
+  const pick = document.createElement('select');
+  for (const [v, t] of [['top', 'top N images'], ['min_score', 'score at least…'],
+                        ['buckets', 'group everything into score buckets']]) {
+    const o = document.createElement('option');
+    o.value = v; o.textContent = t;
+    pick.appendChild(o);
+  }
+  const amount = document.createElement('input');
+  amount.type = 'number'; amount.value = '200'; amount.style.width = '90px';
+  pick.addEventListener('change', () => {
+    amount.hidden = pick.value === 'buckets';
+    amount.value = pick.value === 'min_score' ? '0.8' : '200';
+    amount.step = pick.value === 'min_score' ? '0.05' : '1';
+  });
+
+  const unl = document.createElement('input');
+  unl.type = 'checkbox'; unl.checked = true;
+  const unlRow = mkRow('unrated only', unl);
+  unlRow.title = 'only pure predictions — images you have not rated yourself';
+
+  const modeSel = document.createElement('select');
+  for (const [v, t] of [['copy', 'copy'], ['link', 'hardlink (no extra disk)'],
+                        ['move', 'move']]) {
+    const o = document.createElement('option');
+    o.value = v; o.textContent = t;
+    modeSel.appendChild(o);
+  }
+
+  const row = document.createElement('div');
+  row.style.cssText = 'display:flex;gap:8px;margin-top:14px;justify-content:flex-end';
+  const cancel = document.createElement('button');
+  cancel.className = 'btn btn-quiet';
+  cancel.textContent = 'Cancel';
+  cancel.addEventListener('click', () => backdrop.remove());
+  const go = document.createElement('button');
+  go.className = 'btn btn-primary';
+  go.textContent = 'Export';
+  go.addEventListener('click', async () => {
+    const outPath = out.value.trim();
+    if (!outPath) return;
+    const body = { out: outPath, unlabeled_only: unl.checked, mode: modeSel.value };
+    if (pick.value === 'top') body.top = +amount.value;
+    else if (pick.value === 'min_score') body.min_score = +amount.value;
+    else body.buckets = true;
+    go.disabled = true;
+    try {
+      await api('/api/select', body);
+      backdrop.remove();
+      _pollSelectJob();
+    } catch (e) {
+      go.disabled = false;
+      toast('Could not start: ' + e.message);
+    }
+  });
+  row.append(cancel, go);
+
+  panel.append(h, p,
+    mkRow('output folder', out),
+    mkRow('what to take', pick),
+    mkRow('amount', amount),
+    unlRow,
+    mkRow('transfer', modeSel),
+    row);
+  backdrop.appendChild(panel);
+  document.body.appendChild(backdrop);
+  out.focus();
+}
+
+async function _pollSelectJob() {
+  let status = null;
+  const timer = setInterval(async () => {
+    try {
+      const s = await api('/api/select/status');
+      status?.dismiss();
+      if (s.state === 'done') {
+        clearInterval(timer);
+        toast(`Exported ${s.count} image${s.count === 1 ? '' : 's'} to ${s.out}`
+          + (s.min_score_taken != null ? ` (score ≥ ${s.min_score_taken})` : ''));
+      } else if (s.state === 'failed') {
+        clearInterval(timer);
+        toast('Export failed — check the server log');
+      } else {
+        status = toast(`exporting… ${s.done || 0}/${s.total || '?'}`);
+      }
+    } catch { /* keep polling */ }
+  }, 1500);
 }
 
 async function _pollFolderJob() {

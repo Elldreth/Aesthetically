@@ -576,6 +576,55 @@ def ingest_folder_status():
     return dict(_folder_job)
 
 
+_select_job: dict = {"state": "idle"}
+
+
+class SelectIn(BaseModel):
+    out: str = Field(min_length=1, max_length=500)
+    top: int | None = Field(default=None, ge=1, le=100_000)
+    min_score: float | None = Field(default=None, ge=0, le=1)
+    buckets: bool = False
+    unlabeled_only: bool = False
+    mode: str = Field(default="copy", pattern="^(copy|link|move)$")
+
+
+@app.post("/api/select")
+def select_images(body: SelectIn):
+    """Export top-predicted images to a folder (copy/link/move, optional
+    score-decile grouping). Background job; poll /api/select/status."""
+    import threading
+
+    from .select import run_select
+
+    if not (body.top or body.min_score is not None or body.buckets):
+        raise HTTPException(422, "pick top, min_score, or buckets")
+    out = Path(body.out)
+    if out.exists() and not out.is_dir():
+        raise HTTPException(422, "out exists and is not a folder")
+    if _select_job.get("state") in ("transferring", "starting"):
+        raise HTTPException(409, "a selection job is already running")
+    _select_job.clear()
+    _select_job.update(state="starting", out=str(out))
+
+    def work():
+        try:
+            res = run_select(out, top=body.top, min_score=body.min_score,
+                             buckets=body.buckets, unlabeled_only=body.unlabeled_only,
+                             mode=body.mode, progress=_select_job)
+            _select_job.update(res)
+        except Exception:
+            log.exception("selection failed")
+            _select_job["state"] = "failed"
+
+    threading.Thread(target=work, daemon=True).start()
+    return {"started": True, "out": str(out)}
+
+
+@app.get("/api/select/status")
+def select_status():
+    return dict(_select_job)
+
+
 class IngestIn(BaseModel):
     data_b64: str                  # raw image bytes, base64
     image_url: str | None = None   # where the bytes came from
