@@ -75,6 +75,12 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 VALID_BINARY = {0.0, 0.5, 1.0}
 
 
+def _clean_path(raw: str) -> Path:
+    """Tolerate paths pasted with surrounding quotes (Windows 'Copy as path'
+    wraps in double quotes) or stray whitespace."""
+    return Path(raw.strip().strip('"').strip("'").strip())
+
+
 class LabelIn(BaseModel):
     image_id: int
     value: float  # 1 = yay, 0.5 = maybe, 0 = nay
@@ -551,9 +557,11 @@ def ingest_folder(body: IngestFolderIn):
 
     from .ingest import run_folder_ingest
 
-    folder = Path(body.path)
+    folder = _clean_path(body.path)
     if not folder.is_dir():
-        raise HTTPException(422, "not a folder the server can see")
+        raise HTTPException(422, "not a folder the server can see — check the path "
+                            "(remove surrounding quotes; mapped drives must be visible "
+                            "to the server)")
     with _folder_job_lock:
         if _folder_job["state"] not in ("idle", "done", "failed"):
             raise HTTPException(409, "an ingest job is already running")
@@ -598,7 +606,7 @@ def select_images(body: SelectIn):
 
     if not (body.top or body.min_score is not None or body.buckets):
         raise HTTPException(422, "pick top, min_score, or buckets")
-    out = Path(body.out)
+    out = _clean_path(body.out)
     if out.exists() and not out.is_dir():
         raise HTTPException(422, "out exists and is not a folder")
     if _select_job.get("state") in ("transferring", "starting"):
@@ -641,9 +649,11 @@ def scan_folder(body: ScanIn):
 
     from .scan import run_scan
 
-    folder = Path(body.path)
+    folder = _clean_path(body.path)
     if not folder.is_dir():
-        raise HTTPException(422, "not a folder the server can see")
+        raise HTTPException(422, "not a folder the server can see — check the path "
+                            "(remove surrounding quotes; mapped drives must be visible "
+                            "to the server)")
     if _scan_job.get("state") == "scoring":
         raise HTTPException(409, "a scan is already running")
     _scan_job.clear()
@@ -698,7 +708,7 @@ def scan_export(body: ScanExportIn):
     results = _scan_job.get("results")
     if not results:
         raise HTTPException(409, "no completed scan to export from")
-    out = Path(body.out)
+    out = _clean_path(body.out)
     out.mkdir(parents=True, exist_ok=True)
     n = 0
     for r in results[: body.top]:
