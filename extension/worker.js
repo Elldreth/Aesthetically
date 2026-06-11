@@ -38,11 +38,13 @@ function sameSite(a, b) {
 async function getImageB64(msg) {
   if (msg.dataB64) return msg.dataB64; // canvas-extracted in the page
   const url = new URL(msg.imageUrl);
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+  if (!['http:', 'https:', 'file:'].includes(url.protocol)) {
     throw new Error('unsupported URL scheme');
   }
+  // file: needs "Allow access to file URLs" enabled for the extension
   const res = await fetch(msg.imageUrl, {
-    credentials: sameSite(msg.imageUrl, msg.pageUrl) ? 'include' : 'omit',
+    credentials: url.protocol !== 'file:' && sameSite(msg.imageUrl, msg.pageUrl)
+      ? 'include' : 'omit',
   });
   if (!res.ok) throw new Error('image fetch ' + res.status);
   return toBase64(await res.arrayBuffer());

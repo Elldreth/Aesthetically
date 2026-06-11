@@ -62,15 +62,17 @@
     if (value === undefined) return;
 
     const imageUrl = hovered.currentSrc || hovered.src;
-    if (!imageUrl || !/^https?:/.test(imageUrl)) {
+    if (!imageUrl || !/^(https?|file):/.test(imageUrl)) {
       feedback('no fetchable URL', false);
       return;
     }
     let dataB64 = null;
-    try {
-      dataB64 = canvasExtract(hovered);
-    } catch {
-      /* tainted canvas — worker will fetch instead */
+    if (!imageUrl.startsWith('file:')) {  // file: origins always taint the canvas
+      try {
+        dataB64 = canvasExtract(hovered);
+      } catch {
+        /* tainted canvas — worker will fetch instead */
+      }
     }
     badge.textContent = '…';
     chrome.runtime.sendMessage(
