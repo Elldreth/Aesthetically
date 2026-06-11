@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Aesthetically — rank your likes</title>
+<style>
+  :root { --bg: #14151a; --panel: #1e2027; --text: #d8dae2; --dim: #7a7e8c; }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, sans-serif;
+         height: 100vh; display: flex; flex-direction: column; }
+  #top { display: flex; gap: 14px; align-items: center; padding: 8px 14px; background: var(--panel); }
+  #top a { color: #5b8def; text-decoration: none; }
+  #hint { color: var(--dim); }
+  #info { margin-left: auto; color: var(--dim); font-variant-numeric: tabular-nums; }
+  #board { flex: 1; display: grid; gap: 8px; padding: 10px;
+           grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(2, 1fr); }
+  .cell { position: relative; border-radius: 6px; overflow: hidden; cursor: pointer;
+          outline: 3px solid transparent; background: #1a1c22; }
+  .cell:hover { outline-color: #5b8def; }
+  .cell img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .cell .num { position: absolute; left: 8px; top: 8px; background: rgba(0,0,0,.7);
+               border-radius: 4px; padding: 2px 9px; font-size: 15px; font-weight: 700; }
+  #empty { grid-column: 1/-1; grid-row: 1/-1; display: flex; align-items: center;
+           justify-content: center; color: var(--dim); font-size: 17px; text-align: center; }
+</style>
+</head>
+<body>
+  <div id="top">
+    <a href="/">⟵ rate</a>
+    <span id="hint">click the <b>best</b> image (or press its number) — every click ranks it above the other five</span>
+    <span id="info"></span>
+  </div>
+  <div id="board"></div>
+<script>
+const SIZE = 6;
+let sessionId = null, items = [], votes = 0;
+const $ = id => document.getElementById(id);
+
+async function api(path, body) {
+  const res = await fetch(path, body === undefined ? {} : {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)});
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+async function load() {
+  const data = await api('/api/tournament?size=' + SIZE);
+  items = data.items;
+  const b = $('board');
+  b.innerHTML = '';
+  if (items.length < 2) {
+    b.innerHTML = '<div id="empty">Need at least 2 liked images to rank.<br>Go rate some first!</div>';
+    return;
+  }
+  items.forEach((it, n) => {
+    const c = document.createElement('div');
+    c.className = 'cell';
+    c.innerHTML = `<img src="/img/${it.id}"><span class="num">${n + 1}</span>`;
+    c.onclick = () => vote(it.id);
+    b.appendChild(c);
+  });
+}
+
+async function vote(winnerId) {
+  const r = await api('/api/tournament', {
+    winner_id: winnerId,
+    loser_ids: items.map(i => i.id).filter(i => i !== winnerId),
+    session_id: sessionId,
+  });
+  votes++;
+  const rk = await api('/api/rankings?limit=1');
+  $('info').textContent = `screens: ${votes} · pairs recorded: ${rk.pairs}`;
+  load();
+}
+
+document.addEventListener('keydown', e => {
+  const n = parseInt(e.key, 10);
+  if (n >= 1 && n <= items.length) vote(items[n - 1].id);
+});
+
+(async () => {
+  sessionId = (await api('/api/sessions', {name: 'tournament'})).session_id;
+  load();
+})();
+</script>
+</body>
+</html>

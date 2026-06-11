@@ -1,17 +1,29 @@
 """Aesthetically — local FastAPI server: rating API + static UI + image serving."""
 from __future__ import annotations
 
+import base64
+import hashlib
 import os
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .db import DATA_DIR, get_conn
+from .ingest import inspect_image
 
 app = FastAPI(title="Aesthetically")
+
+# the browser extension calls /api/ingest from chrome-extension:// origins
+app.add_middleware(
+    CORSMiddleware,
+    allow_origin_regex=r"^(chrome|moz)-extension://.*$",
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -165,6 +177,75 @@ def train_taste():
         raise HTTPException(409, str(e))
 
 
+@app.get("/api/tournament")
+def tournament(size: int = 6):
+    """A screen of liked images for best-of-N ranking; least-compared first."""
+    with conn() as db:
+        rows = db.execute(
+            """SELECT i.id,
+                      (SELECT count(*) FROM labels pw WHERE pw.kind = 'pairwise'
+                       AND (pw.image_id = i.id OR pw.opponent_image_id = i.id)) AS comparisons
+               FROM images i
+               JOIN current_labels c ON c.image_id = i.id AND c.kind = 'binary' AND c.value = 1.0
+               WHERE NOT EXISTS (SELECT 1 FROM near_dups d WHERE d.image_id = i.id)
+               ORDER BY comparisons, random() LIMIT ?""",
+            (size,),
+        ).fetchall()
+    return {"items": [dict(r) for r in rows]}
+
+
+class TournamentIn(BaseModel):
+    winner_id: int
+    loser_ids: list[int]
+    session_id: int | None = None
+
+
+@app.post("/api/tournament")
+def tournament_vote(body: TournamentIn):
+    """One click on the best of a screen = N-1 implied pairwise wins."""
+    losers = [i for i in body.loser_ids if i != body.winner_id]
+    if not losers:
+        raise HTTPException(422, "need at least one loser")
+    with conn() as db:
+        db.executemany(
+            "INSERT INTO labels (image_id, kind, value, opponent_image_id, source, session_id)"
+            " VALUES (?, 'pairwise', 1, ?, 'manual', ?)",
+            [(body.winner_id, loser, body.session_id) for loser in losers],
+        )
+    return {"pairs": len(losers)}
+
+
+@app.get("/api/rankings")
+def rankings(limit: int = 50):
+    """Bradley-Terry strengths from pairwise votes (simple MM iteration)."""
+    with conn() as db:
+        pairs = db.execute(
+            "SELECT image_id AS w, opponent_image_id AS l FROM labels WHERE kind = 'pairwise'"
+        ).fetchall()
+        if not pairs:
+            return {"items": [], "pairs": 0}
+        ids = sorted({p["w"] for p in pairs} | {p["l"] for p in pairs})
+        idx = {v: k for k, v in enumerate(ids)}
+        wins = [[0] * len(ids) for _ in ids]
+        for p in pairs:
+            wins[idx[p["w"]]][idx[p["l"]]] += 1
+        strength = [1.0] * len(ids)
+        for _ in range(50):  # MM algorithm (Hunter 2004)
+            new = []
+            for i in range(len(ids)):
+                num = sum(wins[i][j] for j in range(len(ids)))
+                den = sum(
+                    (wins[i][j] + wins[j][i]) / (strength[i] + strength[j])
+                    for j in range(len(ids)) if j != i and (wins[i][j] or wins[j][i])
+                )
+                new.append(num / den if den else strength[i])
+            total = sum(new) or 1.0
+            strength = [s * len(new) / total for s in new]
+        ranked = sorted(zip(ids, strength), key=lambda t: -t[1])[:limit]
+        return {"pairs": len(pairs),
+                "items": [{"id": i, "strength": round(s, 3)} for i, s in ranked]}
+
+
 @app.get("/api/model")
 def model_info():
     with conn() as db:
@@ -221,6 +302,69 @@ def undo(body: UndoIn):
             raise HTTPException(404, "nothing to undo")
         db.execute("DELETE FROM labels WHERE id = ?", (row["id"],))
         return {"image_id": row["image_id"], "kind": row["kind"], "value": row["value"]}
+
+
+class IngestIn(BaseModel):
+    data_b64: str                  # raw image bytes, base64
+    image_url: str | None = None   # where the bytes came from
+    page_url: str | None = None    # the gallery page
+    value: float | None = None     # optional immediate rating
+    session_id: int | None = None
+
+
+@app.post("/api/ingest")
+def ingest(body: IngestIn):
+    """Ingest an image from the web (browser extension or URL importer).
+
+    Content-addressed: re-ingesting known bytes only adds source rows, so the
+    same image rated on two sites stays one record."""
+    try:
+        data = base64.b64decode(body.data_b64)
+        info = inspect_image(data)
+    except Exception:
+        raise HTTPException(422, "not a decodable image")
+    if body.value is not None and body.value not in VALID_BINARY:
+        raise HTTPException(422, "value must be 1, 0.5 or 0")
+
+    sha = hashlib.sha256(data).hexdigest()
+    ext = (info["format"] or "png").lower()
+    with conn() as db:
+        row = db.execute("SELECT id FROM images WHERE sha256 = ?", (sha,)).fetchone()
+        if row:
+            image_id, created = row["id"], False
+        else:
+            store = DATA_DIR / "ingested"
+            store.mkdir(parents=True, exist_ok=True)
+            path = store / f"{sha[:16]}.{ext}"
+            path.write_bytes(data)
+            cur = db.execute(
+                """INSERT INTO images (sha256, width, height, format, file_size,
+                                       prompt, negative_prompt, model_hash, seed, gen_params_raw)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (sha, info["width"], info["height"], info["format"], len(data),
+                 info.get("prompt"), info.get("negative_prompt"),
+                 info.get("model_hash"), info.get("seed"), info.get("gen_params_raw")),
+            )
+            image_id, created = cur.lastrowid, True
+            db.execute(
+                "INSERT INTO image_sources (image_id, kind, location) VALUES (?, 'local', ?)",
+                (image_id, str(path.resolve())),
+            )
+        for url in {u for u in (body.image_url, body.page_url) if u}:
+            db.execute(
+                """INSERT INTO image_sources (image_id, kind, location) VALUES (?, 'url', ?)
+                   ON CONFLICT (image_id, location) DO UPDATE SET last_verified = datetime('now')""",
+                (image_id, url),
+            )
+        label_id = None
+        if body.value is not None:
+            cur = db.execute(
+                "INSERT INTO labels (image_id, kind, value, source, session_id)"
+                " VALUES (?, 'binary', ?, 'manual', ?)",
+                (image_id, body.value, body.session_id),
+            )
+            label_id = cur.lastrowid
+    return {"image_id": image_id, "created": created, "label_id": label_id}
 
 
 @app.post("/api/sessions")

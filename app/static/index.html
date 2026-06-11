@@ -39,6 +39,13 @@
 <body>
   <div id="hud">
     <a href="/static/grid.html" style="color:#5b8def;text-decoration:none">grid ⊞</a>
+    <a href="/static/tournament.html" style="color:#5b8def;text-decoration:none">rank ⚔</a>
+    <select id="mode" style="background:#3a3e4a;color:#d8dae2;border:0;border-radius:4px;padding:2px 6px">
+      <option value="default">in order</option>
+      <option value="uncertain">most uncertain</option>
+      <option value="worst">predicted worst</option>
+      <option value="best">predicted best</option>
+    </select>
     <span class="big" id="h-pos">–</span>
     <span class="dim" id="h-counts">loading…</span>
     <span class="dim" id="h-session"></span>
@@ -100,7 +107,7 @@ function flash(txt, color) {
 
 async function refill() {
   if (queue.length > PRELOAD) return;
-  const data = await api('/api/queue?limit=40');
+  const data = await api('/api/queue?limit=40&mode=' + $('mode').value);
   const have = new Set(queue.map(i => i.id));
   const recent = new Set(history.slice(-20).map(h => h.item.id));
   for (const it of data.items)
@@ -132,7 +139,8 @@ async function rate(value) {
     } else {
       const r = await api('/api/label', {image_id: it.id, value, session_id: sessionId});
       history.push({item: it});
-      flash(value === 1 ? '👍' : value === 0.5 ? '🤔' : '👎',
+      const score = it.score != null ? '  model: ' + it.score.toFixed(2) : '';
+      flash((value === 1 ? '👍' : value === 0.5 ? '🤔' : '👎') + score,
             value === 1 ? '#57b368' : value === 0.5 ? '#d9a648' : '#e05c5c');
     }
   } catch (e) { queue.unshift(it); show(); alert('save failed: ' + e.message); return; }
@@ -165,8 +173,12 @@ $('b-skip').onclick = () => rate('skip');
 $('b-excl').onclick = () => rate('exclude');
 $('b-undo').onclick = undo;
 
+$('mode').onchange = async () => { queue = []; await refill(); show(); };
+
 (async () => {
   sessionId = (await api('/api/sessions', {name: null})).session_id;
+  const m = await api('/api/model');
+  if (m.model) $('mode').value = 'uncertain';   // active learning by default
   await refill(); show(); refreshStats();
 })();
 </script>
