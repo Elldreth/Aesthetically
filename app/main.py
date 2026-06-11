@@ -69,6 +69,10 @@ async def guard(request: Request, call_next):
         if token and not (sent and secrets.compare_digest(sent, token)):
             return JSONResponse({"detail": "missing or invalid token"}, status_code=403)
     response = await call_next(request)
+    # the UI assets change often (single-user local app) — make the browser
+    # revalidate so a stale app.js/app.css never lingers after an update
+    if request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache"
     return response
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"

@@ -237,6 +237,7 @@ function _toggleJobsPanel() {
     panel.innerHTML = '<div class="jobs-head">Background jobs'
       + '<button class="btn btn-quiet" id="jobs-close" aria-label="Close">✕</button></div>'
       + '<div class="jobs-body"></div>';
+    panel.hidden = true;          // created closed; the toggle below opens it
     document.body.appendChild(panel);
     panel.querySelector('#jobs-close').addEventListener('click', () => { panel.hidden = true; });
   }
