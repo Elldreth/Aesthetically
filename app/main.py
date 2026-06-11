@@ -625,6 +625,100 @@ def select_status():
     return dict(_select_job)
 
 
+# ---- ephemeral folder scoring (nothing enters the collection) ----
+
+_scan_job: dict = {"state": "idle"}
+
+
+class ScanIn(BaseModel):
+    path: str = Field(min_length=1, max_length=500)
+
+
+@app.post("/api/scan")
+def scan_folder(body: ScanIn):
+    """Score a folder WITHOUT adding anything to the collection."""
+    import threading
+
+    from .scan import run_scan
+
+    folder = Path(body.path)
+    if not folder.is_dir():
+        raise HTTPException(422, "not a folder the server can see")
+    if _scan_job.get("state") == "scoring":
+        raise HTTPException(409, "a scan is already running")
+    _scan_job.clear()
+    _scan_job.update(state="starting", path=str(folder))
+
+    def work():
+        try:
+            run_scan(folder, _scan_job)
+        except Exception:
+            log.exception("scan failed")
+            _scan_job["state"] = "failed"
+
+    threading.Thread(target=work, daemon=True).start()
+    return {"started": True}
+
+
+@app.get("/api/scan/status")
+def scan_status():
+    out = {k: v for k, v in _scan_job.items() if k != "results"}
+    out["count"] = len(_scan_job.get("results", []))
+    return out
+
+
+@app.get("/api/scan/results")
+def scan_results(limit: int = 60, offset: int = 0):
+    results = _scan_job.get("results", [])
+    return {"total": len(results), "model": _scan_job.get("model"),
+            "path": _scan_job.get("path"),
+            "items": [{"i": offset + j, "score": r["score"], "name": Path(r["path"]).name}
+                      for j, r in enumerate(results[offset:offset + limit])]}
+
+
+@app.get("/scan/img/{index}")
+def scan_image(index: int):
+    """Serve a scanned file by result index — no arbitrary path access."""
+    results = _scan_job.get("results", [])
+    if not (0 <= index < len(results)):
+        raise HTTPException(404)
+    return FileResponse(results[index]["path"])
+
+
+class ScanExportIn(BaseModel):
+    out: str = Field(min_length=1, max_length=500)
+    top: int = Field(default=50, ge=1, le=100_000)
+    mode: str = Field(default="copy", pattern="^(copy|link|move)$")
+
+
+@app.post("/api/scan/export")
+def scan_export(body: ScanExportIn):
+    import shutil
+
+    results = _scan_job.get("results")
+    if not results:
+        raise HTTPException(409, "no completed scan to export from")
+    out = Path(body.out)
+    out.mkdir(parents=True, exist_ok=True)
+    n = 0
+    for r in results[: body.top]:
+        src = Path(r["path"])
+        dst = out / f"{r['score']:.3f}_{src.name}"
+        if dst.exists():
+            continue
+        if body.mode == "move":
+            shutil.move(src, dst)
+        elif body.mode == "link":
+            try:
+                os.link(src, dst)
+            except OSError:
+                shutil.copy2(src, dst)
+        else:
+            shutil.copy2(src, dst)
+        n += 1
+    return {"exported": n, "out": str(out)}
+
+
 class IngestIn(BaseModel):
     data_b64: str                  # raw image bytes, base64
     image_url: str | None = None   # where the bytes came from

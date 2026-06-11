@@ -108,6 +108,12 @@ function initNav(activeTab) {
   exp.title = 'Copy the highest-predicted images to a folder';
   exp.addEventListener('click', _openExportBest);
   right.appendChild(exp);
+  const scan = document.createElement('button');
+  scan.className = 'btn btn-quiet';
+  scan.textContent = 'Score folder';
+  scan.title = 'Predict your taste for any folder WITHOUT adding it to the collection';
+  scan.addEventListener('click', _openScanFolder);
+  right.appendChild(scan);
   const help = document.createElement('button');
   help.className = 'btn btn-quiet icon-btn';
   help.setAttribute('aria-label', 'Keyboard shortcuts');
@@ -229,6 +235,60 @@ function _openAddFolder() {
       await api('/api/ingest_folder', { path });
       backdrop.remove();
       _pollFolderJob();
+    } catch (e) {
+      go.disabled = false;
+      toast('Could not start: ' + e.message);
+    }
+  });
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') go.click(); });
+  row.append(cancel, go);
+  panel.append(h, p, input, row);
+  backdrop.appendChild(panel);
+  document.body.appendChild(backdrop);
+  input.focus();
+}
+
+/* ---------- score-folder dialog ---------- */
+
+function _openScanFolder() {
+  const backdrop = document.createElement('div');
+  backdrop.className = 'overlay-backdrop';
+  backdrop.addEventListener('click', e => { if (e.target === backdrop) backdrop.remove(); });
+
+  const panel = document.createElement('div');
+  panel.className = 'overlay-panel';
+  panel.setAttribute('role', 'dialog');
+  panel.setAttribute('aria-modal', 'true');
+  panel.setAttribute('aria-label', 'Score a folder');
+
+  const h = document.createElement('h2');
+  h.textContent = 'Score a folder';
+  const p = document.createElement('p');
+  p.className = 'dim';
+  p.style.marginBottom = '12px';
+  p.textContent = 'Predicts how much you would like every image in a folder — '
+    + 'nothing is added to your collection or rating queue. Results open in a '
+    + 'ranked view where you can export the top picks.';
+  const input = document.createElement('input');
+  input.placeholder = 'D:\\new-images  or  \\\\server\\share\\folder';
+  input.style.width = '100%';
+  input.setAttribute('aria-label', 'Folder path');
+  const row = document.createElement('div');
+  row.style.cssText = 'display:flex;gap:8px;margin-top:12px;justify-content:flex-end';
+  const cancel = document.createElement('button');
+  cancel.className = 'btn btn-quiet';
+  cancel.textContent = 'Cancel';
+  cancel.addEventListener('click', () => backdrop.remove());
+  const go = document.createElement('button');
+  go.className = 'btn btn-primary';
+  go.textContent = 'Score';
+  go.addEventListener('click', async () => {
+    const path = input.value.trim();
+    if (!path) return;
+    go.disabled = true;
+    try {
+      await api('/api/scan', { path });
+      location.href = '/static/scan.html';
     } catch (e) {
       go.disabled = false;
       toast('Could not start: ' + e.message);
