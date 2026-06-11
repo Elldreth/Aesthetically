@@ -69,6 +69,26 @@ CREATE TABLE IF NOT EXISTS embeddings (
   PRIMARY KEY (image_id, model)
 );
 
+-- Model scores, replaced wholesale on retrain (history lives in taste model files,
+-- not here — unlike labels, predictions are cheap to regenerate).
+CREATE TABLE IF NOT EXISTS predictions (
+  image_id INTEGER NOT NULL REFERENCES images(id),
+  model TEXT NOT NULL,                    -- e.g. 'taste:v3'
+  score REAL NOT NULL,                    -- P(like), 0..1
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (image_id, model)
+);
+
+-- Near-duplicate pairs surfaced by dedupe.py (image_id > dup_of_image_id never holds;
+-- canonical = lowest id in the connected component).
+CREATE TABLE IF NOT EXISTS near_dups (
+  image_id INTEGER NOT NULL REFERENCES images(id),
+  canonical_id INTEGER NOT NULL REFERENCES images(id),
+  method TEXT NOT NULL,                   -- 'phash' | 'embedding' | 'phash+embedding'
+  score REAL,                             -- hamming distance or cosine similarity
+  PRIMARY KEY (image_id)
+);
+
 -- Reproducible dataset snapshots: the query that defined them plus frozen membership.
 CREATE TABLE IF NOT EXISTS exports (
   id INTEGER PRIMARY KEY,

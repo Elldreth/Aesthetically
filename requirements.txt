@@ -2,3 +2,12 @@ fastapi>=0.115
 uvicorn[standard]>=0.30
 pillow>=10.0
 httpx>=0.27
+
+# ML stack (Phase 2+)
+# torch: install the CUDA wheel first for GPU embedding:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu126
+torch>=2.6
+transformers>=4.49
+scikit-learn>=1.4
+numpy>=1.26
+imagehash>=4.3

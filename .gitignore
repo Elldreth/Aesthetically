@@ -19,3 +19,6 @@ best.pt
 
 # local Claude Code settings
 .claude/settings.local.json
+
+# dataset export snapshots
+exports/
