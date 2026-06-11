@@ -35,10 +35,18 @@
 <body>
   <div id="top">
     <div class="group">
+      <select id="filter" aria-label="Which images">
+        <option value="unrated">unrated</option>
+        <option value="liked">liked</option>
+        <option value="maybe">maybe</option>
+        <option value="disliked">disliked</option>
+        <option value="all">everything</option>
+      </select>
       <select id="mode" aria-label="Sort order">
         <option value="worst">predicted worst first</option>
         <option value="best">predicted best first</option>
         <option value="uncertain">most uncertain first</option>
+        <option value="newest">newest first</option>
         <option value="default">oldest first</option>
       </select>
     </div>
@@ -83,7 +91,7 @@ let sessionId = null, offset = 0, total = 0, items = [], selected = new Set();
 const $ = id => document.getElementById(id);
 
 async function load() {
-  const data = await api(`/api/grid?mode=${$('mode').value}&limit=${LIMIT}&offset=${offset}`);
+  const data = await api(`/api/grid?mode=${$('mode').value}&filter=${$('filter').value}&limit=${LIMIT}&offset=${offset}`);
   items = data.items; total = data.total; selected.clear();
   const g = $('grid');
   g.textContent = '';
@@ -134,7 +142,7 @@ async function load() {
 function updateInfo() {
   const shown = items.length
     ? ` · showing ${offset + 1}–${offset + items.length}` : '';
-  $('info').textContent = `${total.toLocaleString()} unrated${shown}` +
+  $('info').textContent = `${total.toLocaleString()} ${$('filter').value}${shown}` +
     (selected.size ? ` · selected: ${selected.size}` : '');
   const none = !selected.size;
   $('b-nay').disabled = none;
@@ -177,6 +185,7 @@ $('b-yay').addEventListener('click', () => bulk(1));
 $('b-next').addEventListener('click', nextPage);
 $('b-prev').addEventListener('click', prevPage);
 $('mode').addEventListener('change', () => { offset = 0; load(); });
+$('filter').addEventListener('change', () => { offset = 0; load(); });
 
 function setTrainBadge(kind, text) {
   const b = $('train-badge');

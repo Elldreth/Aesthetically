@@ -209,16 +209,41 @@ def thumbnail(image_id: int):
     return FileResponse(thumb_path, media_type="image/webp")
 
 
+_SCORED_IMAGES = """
+    FROM (SELECT i.*,
+                 (SELECT score FROM predictions p WHERE p.image_id = i.id
+                  AND p.model LIKE 'taste:%' ORDER BY p.created_at DESC, p.model DESC
+                  LIMIT 1) AS score
+          FROM images i) i
+"""
+_GRID_FILTER = {
+    "unrated": _UNRATED,
+    "liked": _SCORED_IMAGES + " JOIN current_labels c ON c.image_id = i.id"
+             " AND c.kind = 'binary' AND c.value = 1.0",
+    "maybe": _SCORED_IMAGES + " JOIN current_labels c ON c.image_id = i.id"
+             " AND c.kind = 'binary' AND c.value = 0.5",
+    "disliked": _SCORED_IMAGES + " JOIN current_labels c ON c.image_id = i.id"
+                " AND c.kind = 'binary' AND c.value = 0.0",
+    "all": _SCORED_IMAGES + " WHERE 1=1",
+}
+_GRID_ORDER = dict(_QUEUE_ORDER, newest="i.id DESC")
+
+
 @app.get("/api/grid")
-def grid(mode: str = "worst", limit: int = 60, offset: int = 0):
-    """Paged unrated images for grid triage, sorted by taste score."""
-    order = _QUEUE_ORDER.get(mode)
+def grid(mode: str = "worst", limit: int = 60, offset: int = 0,
+         filter: str = "unrated"):
+    """Paged images for the grid, sorted by taste score. filter selects the
+    label bucket; rated images stay browsable (newest mode shows recent work)."""
+    order = _GRID_ORDER.get(mode)
+    source = _GRID_FILTER.get(filter)
     if order is None:
-        raise HTTPException(422, f"mode must be one of {sorted(_QUEUE_ORDER)}")
+        raise HTTPException(422, f"mode must be one of {sorted(_GRID_ORDER)}")
+    if source is None:
+        raise HTTPException(422, f"filter must be one of {sorted(_GRID_FILTER)}")
     with conn() as db:
-        total = db.execute(f"SELECT count(*) AS n {_UNRATED}").fetchone()["n"]
+        total = db.execute(f"SELECT count(*) AS n {source}").fetchone()["n"]
         rows = db.execute(
-            f"""SELECT i.id, i.score {_UNRATED} ORDER BY {order} LIMIT ? OFFSET ?""",
+            f"""SELECT i.id, i.score {source} ORDER BY {order} LIMIT ? OFFSET ?""",
             (limit, offset),
         ).fetchall()
     return {"total": total, "items": [dict(r) for r in rows]}
