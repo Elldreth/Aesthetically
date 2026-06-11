@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Aesthetically — studio</title>
+<style>
+  :root { --bg: #14151a; --panel: #1e2027; --text: #d8dae2; --dim: #7a7e8c; }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, sans-serif;
+         min-height: 100vh; padding-bottom: 30px; }
+  header { display: flex; gap: 14px; align-items: center; padding: 8px 14px;
+           background: var(--panel); position: sticky; top: 0; }
+  header a { color: #5b8def; text-decoration: none; }
+  #health { margin-left: auto; color: var(--dim); }
+  #health .up { color: #57b368; } #health .down { color: #e05c5c; }
+  section { max-width: 1100px; margin: 18px auto 0; padding: 0 14px; }
+  h2 { font-size: 15px; margin-bottom: 8px; color: #aab0c0; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  input, select { background: #2a2d36; border: 0; border-radius: 5px; color: var(--text);
+                  padding: 8px 10px; font-size: 14px; }
+  #prompt { flex: 1; min-width: 320px; }
+  button { background: #38507e; color: #fff; border: 0; border-radius: 5px;
+           padding: 8px 16px; font-size: 14px; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: wait; }
+  #results { display: grid; gap: 8px; margin-top: 12px;
+             grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+  .res { position: relative; border-radius: 6px; overflow: hidden; background: #1a1c22; }
+  .res img { width: 100%; display: block; }
+  .res .s { position: absolute; top: 6px; left: 6px; background: rgba(0,0,0,.7);
+            padding: 2px 8px; border-radius: 4px; font-weight: 700; }
+  .res .acts { position: absolute; bottom: 6px; right: 6px; display: flex; gap: 4px; }
+  .res .acts button { padding: 3px 9px; font-size: 13px; }
+  table { border-collapse: collapse; margin-top: 8px; width: 100%; }
+  td, th { padding: 5px 10px; border-bottom: 1px solid #2a2d36; text-align: left;
+           font-variant-numeric: tabular-nums; }
+  .dim { color: var(--dim); }
+  #log { color: var(--dim); margin-top: 8px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+  <header>
+    <a href="/">⟵ rate</a><a href="/static/grid.html">grid ⊞</a><a href="/static/tournament.html">rank ⚔</a>
+    <b>studio</b>
+    <span id="health">checking artifex…</span>
+  </header>
+
+  <section>
+    <h2>Best-of-N — generate, let your taste model pick</h2>
+    <div class="row">
+      <input id="prompt" placeholder="prompt (Artifex DSL flags like --style work)">
+      <select id="n"><option>2</option><option selected>4</option><option>6</option><option>8</option></select>
+      <button id="b-gen">generate</button>
+    </div>
+    <div id="results"></div>
+  </section>
+
+  <section>
+    <h2>Taste LoRA — train on your best-loved, most diverse likes</h2>
+    <div class="row">
+      <input id="lora-name" placeholder="lora name" value="my-taste-v1" size="16">
+      <label class="dim">images <input id="lora-k" type="number" value="40" min="10" max="200" style="width:70px"></label>
+      <label class="dim">steps <input id="lora-steps" type="number" value="1200" step="100" style="width:80px"></label>
+      <button id="b-train">train</button>
+      <button id="b-eval" title="probe-prompt eval of selected run">eval latest run</button>
+    </div>
+    <table id="runs"><thead><tr><th>run</th><th>name</th><th>status</th><th>dataset</th><th>artifact</th></tr></thead><tbody></tbody></table>
+    <div id="log"></div>
+  </section>
+<script>
+const $ = id => document.getElementById(id);
+let sessionId = null;
+
+async function api(path, body) {
+  const res = await fetch(path, body === undefined ? {} : {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)});
+  if (!res.ok) throw new Error((await res.text()).slice(0, 300));
+  return res.json();
+}
+const log = m => { $('log').textContent = m; };
+
+async function health() {
+  try {
+    const h = await api('/api/studio/health');
+    $('health').innerHTML = h.artifex
+      ? '<span class="up">● artifex up</span>' +
+        (h.vram ? ` <span class="dim">${h.vram.free_gb}GB free</span>` : '')
+      : '<span class="down">● artifex down</span> <span class="dim">start it at :7860</span>';
+  } catch { $('health').innerHTML = '<span class="down">● artifex down</span>'; }
+}
+
+$('b-gen').onclick = async () => {
+  const prompt = $('prompt').value.trim();
+  if (!prompt) return;
+  $('b-gen').disabled = true; log('generating ' + $('n').value + ' seeds…');
+  try {
+    const r = await api('/api/studio/best_of_n', {prompt, n: +$('n').value});
+    $('results').innerHTML = '';
+    for (const it of r.items) {
+      const d = document.createElement('div');
+      d.className = 'res';
+      d.innerHTML = `<img src="/img/${it.image_id}">` +
+        (it.score != null ? `<span class="s">${it.score.toFixed(2)}</span>` : '') +
+        `<div class="acts">
+           <button onclick="rate(${it.image_id},0)">👎</button>
+           <button onclick="rate(${it.image_id},1)">👍</button>
+         </div>`;
+      $('results').appendChild(d);
+    }
+    log('done — ranked best first; your ratings refine the next round');
+  } catch (e) { log('failed: ' + e.message); }
+  $('b-gen').disabled = false;
+};
+
+async function rate(imageId, value) {
+  await api('/api/label', {image_id: imageId, value, session_id: sessionId});
+  log('rated #' + imageId + (value ? ' 👍' : ' 👎'));
+}
+
+async function loadRuns() {
+  const r = await api('/api/studio/runs');
+  const tb = $('runs').querySelector('tbody');
+  tb.innerHTML = '';
+  for (const run of r.items) {
+    const fp = JSON.parse(run.dataset_fingerprint_json || '{}');
+    tb.innerHTML += `<tr><td>#${run.id}</td><td>${run.name}</td><td>${run.status}</td>` +
+      `<td class="dim">${fp.n || '?'} imgs · taste ${fp.mean_taste ?? '?'}</td>` +
+      `<td class="dim">${run.artifact_path || '—'}</td></tr>`;
+  }
+}
+
+$('b-train').onclick = async () => {
+  $('b-train').disabled = true; log('curating dataset + submitting to Artifex…');
+  try {
+    const r = await api('/api/studio/train_lora', {
+      name: $('lora-name').value.trim(), k: +$('lora-k').value, steps: +$('lora-steps').value});
+    log(`run #${r.run_id} submitted (job ${r.job_id}, ${r.dataset_size} images). ` +
+        'Training takes a while - status updates in the table.');
+    pollRun(r.run_id);
+  } catch (e) { log('failed: ' + e.message); }
+  $('b-train').disabled = false; loadRuns();
+};
+
+async function pollRun(runId) {
+  try {
+    const s = await api(`/api/studio/runs/${runId}`);
+    const st = s.job.state;
+    log(`run #${runId}: ${st}` + (s.job.step ? ` — step ${s.job.step}/${s.job.total}` : ''));
+    loadRuns();
+    if (st && !['completed', 'failed', 'cancelled'].includes(st)) {
+      setTimeout(() => pollRun(runId), 10000);
+    }
+  } catch (e) { log('poll failed: ' + e.message); }
+}
+
+$('b-eval').onclick = async () => {
+  const r = await api('/api/studio/runs');
+  const done = r.items.find(x => x.status === 'done');
+  if (!done) { log('no completed run to eval'); return; }
+  $('b-eval').disabled = true; log(`evaluating run #${done.id} on your probe prompts…`);
+  try {
+    const ev = await api('/api/studio/eval_lora', {run_id: done.id});
+    log('eval: ' + JSON.stringify(ev.summary, null, 1));
+  } catch (e) { log('eval failed: ' + e.message); }
+  $('b-eval').disabled = false;
+};
+
+(async () => {
+  sessionId = (await api('/api/sessions', {name: 'studio'})).session_id;
+  health(); loadRuns(); setInterval(health, 30000);
+})();
+</script>
+</body>
+</html>

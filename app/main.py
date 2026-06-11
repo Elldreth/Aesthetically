@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import os
 from pathlib import Path
 
@@ -13,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .db import DATA_DIR, get_conn
-from .ingest import inspect_image
+from .ingest import register_bytes
 
 app = FastAPI(title="Aesthetically")
 
@@ -246,6 +245,111 @@ def rankings(limit: int = 50):
                 "items": [{"id": i, "strength": round(s, 3)} for i, s in ranked]}
 
 
+# ---- studio: the Artifex closed loop ----
+
+class BestOfNIn(BaseModel):
+    prompt: str
+    n: int = 4
+    model: str | None = None
+    size: str = "832x1216"
+    loras: list[dict] | None = None
+
+
+@app.post("/api/studio/best_of_n")
+def studio_best_of_n(body: BestOfNIn):
+    from . import studio
+
+    try:
+        return {"items": studio.best_of_n(body.prompt, body.n, body.model,
+                                          body.size, body.loras)}
+    except Exception as e:
+        raise HTTPException(502, f"{type(e).__name__}: {e}")
+
+
+class TrainLoraIn(BaseModel):
+    name: str
+    k: int = 40
+    steps: int = 1200
+    rank: int = 16
+    lr: float = 1e-4
+
+
+@app.post("/api/studio/train_lora")
+def studio_train_lora(body: TrainLoraIn):
+    from . import studio
+
+    try:
+        return studio.train_taste_lora(body.name, body.k, body.steps, body.rank, body.lr)
+    except Exception as e:
+        raise HTTPException(502, f"{type(e).__name__}: {e}")
+
+
+@app.get("/api/studio/runs")
+def studio_runs():
+    with conn() as db:
+        rows = db.execute(
+            "SELECT id, name, status, started_at, finished_at, artifact_path,"
+            " dataset_fingerprint_json FROM training_runs ORDER BY id DESC LIMIT 50"
+        ).fetchall()
+    return {"items": [dict(r) for r in rows]}
+
+
+@app.get("/api/studio/runs/{run_id}")
+def studio_run_status(run_id: int):
+    from . import studio
+
+    try:
+        return studio.poll_run(run_id)
+    except Exception as e:
+        raise HTTPException(502, f"{type(e).__name__}: {e}")
+
+
+class EvalLoraIn(BaseModel):
+    run_id: int
+    lora_name: str | None = None
+    prompts: list[str] | None = None
+    seeds_per_prompt: int = 2
+    model: str | None = None
+
+
+@app.post("/api/studio/eval_lora")
+def studio_eval_lora(body: EvalLoraIn):
+    from . import studio
+
+    try:
+        return studio.eval_lora(body.run_id, body.lora_name, body.prompts,
+                                body.seeds_per_prompt, body.model)
+    except Exception as e:
+        raise HTTPException(502, f"{type(e).__name__}: {e}")
+
+
+@app.get("/api/studio/health")
+def studio_health():
+    from .artifex_client import ArtifexClient
+
+    client = ArtifexClient(timeout=3.0)
+    up = client.is_up()
+    out = {"artifex": up}
+    if up:
+        try:
+            import httpx
+
+            r = httpx.get(client.base_url + "/health", timeout=5.0).json()
+            out.update({k: r.get(k) for k in ("models", "vram") if k in r})
+            r2 = httpx.get(client.base_url + "/v1/loras", timeout=5.0).json()
+            out["loras"] = [l.get("name") for l in r2] if isinstance(r2, list) else r2
+        except Exception:
+            pass
+    return out
+
+
+@app.get("/api/studio/probe_prompts")
+def studio_probe_prompts():
+    from . import studio
+
+    return {"prompts": studio.default_probe_prompts()}
+
+
 @app.get("/api/model")
 def model_info():
     with conn() as db:
@@ -320,42 +424,19 @@ def ingest(body: IngestIn):
     same image rated on two sites stays one record."""
     try:
         data = base64.b64decode(body.data_b64)
-        info = inspect_image(data)
     except Exception:
-        raise HTTPException(422, "not a decodable image")
+        raise HTTPException(422, "not decodable base64")
     if body.value is not None and body.value not in VALID_BINARY:
         raise HTTPException(422, "value must be 1, 0.5 or 0")
 
-    sha = hashlib.sha256(data).hexdigest()
-    ext = (info["format"] or "png").lower()
     with conn() as db:
-        row = db.execute("SELECT id FROM images WHERE sha256 = ?", (sha,)).fetchone()
-        if row:
-            image_id, created = row["id"], False
-        else:
-            store = DATA_DIR / "ingested"
-            store.mkdir(parents=True, exist_ok=True)
-            path = store / f"{sha[:16]}.{ext}"
-            path.write_bytes(data)
-            cur = db.execute(
-                """INSERT INTO images (sha256, width, height, format, file_size,
-                                       prompt, negative_prompt, model_hash, seed, gen_params_raw)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (sha, info["width"], info["height"], info["format"], len(data),
-                 info.get("prompt"), info.get("negative_prompt"),
-                 info.get("model_hash"), info.get("seed"), info.get("gen_params_raw")),
+        try:
+            image_id, created = register_bytes(
+                db, data, store_dir=DATA_DIR / "ingested",
+                image_url=body.image_url, page_url=body.page_url,
             )
-            image_id, created = cur.lastrowid, True
-            db.execute(
-                "INSERT INTO image_sources (image_id, kind, location) VALUES (?, 'local', ?)",
-                (image_id, str(path.resolve())),
-            )
-        for url in {u for u in (body.image_url, body.page_url) if u}:
-            db.execute(
-                """INSERT INTO image_sources (image_id, kind, location) VALUES (?, 'url', ?)
-                   ON CONFLICT (image_id, location) DO UPDATE SET last_verified = datetime('now')""",
-                (image_id, url),
-            )
+        except Exception:
+            raise HTTPException(422, "not a decodable image")
         label_id = None
         if body.value is not None:
             cur = db.execute(

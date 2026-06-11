@@ -51,6 +51,21 @@ def embed_pil(images: list[Image.Image]) -> np.ndarray:
     return feats.float().cpu().numpy()
 
 
+def text_features(texts: list[str]) -> np.ndarray:
+    """L2-normalized SigLIP text embeddings (same space as images — dual tower)."""
+    import torch
+
+    _load_model()
+    inputs = _processor(text=texts, return_tensors="pt", padding="max_length",
+                        truncation=True).to(_device)
+    with torch.no_grad():
+        feats = _model.get_text_features(**inputs)
+    if not torch.is_tensor(feats):
+        feats = feats.pooler_output
+    feats = feats / feats.norm(dim=-1, keepdim=True)
+    return feats.float().cpu().numpy()
+
+
 def load_vectors(db: sqlite3.Connection, model: str = MODEL_NAME,
                  image_ids: list[int] | None = None) -> tuple[np.ndarray, np.ndarray]:
     """(ids, matrix) of cached embeddings, optionally restricted to image_ids."""

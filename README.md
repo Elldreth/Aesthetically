@@ -66,6 +66,25 @@ Re-rating the same image elsewhere dedupes by content hash.
 2026-06-11 (6,754 unique images: 532 liked / 1,674 disliked / 13 maybe /
 4,535 unlabeled). Don't delete them until you're confident in the DB.
 
+## Studio — the Artifex closed loop
+
+With [Artifex](../Artifex) running on `:7860` (override via `ARTIFEX_URL`),
+the **studio ✨** view closes the loop:
+
+- **Best-of-N**: type a prompt, generate N seeds, and your taste model
+  ranks them — every generation is ingested with full metadata (prompt,
+  checkpoint, seed) and scored, and your 👍/👎 on the results feeds the
+  next retrain.
+- **Taste LoRA**: one click curates your top-loved images (Bradley-Terry
+  rank → taste score, then greedy max-min diversity selection in embedding
+  space) and submits a style-LoRA job to Artifex. Runs are logged in
+  `training_runs` with a dataset fingerprint.
+- **Eval**: probe prompts (your own highest-scored prompts by default) ×
+  fixed seeds, generated with and without the LoRA, scored on four axes —
+  taste, prompt adherence (SigLIP text↔image), style fidelity (training-set
+  centroid), and seed diversity (overfit detector). Results land in
+  `eval_results` for cross-run comparison.
+
 ## ML pipeline
 
 ```

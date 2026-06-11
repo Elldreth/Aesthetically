@@ -58,6 +58,52 @@ def inspect_image(data: bytes) -> dict:
     return info
 
 
+def register_bytes(conn: sqlite3.Connection, data: bytes, *,
+                   store_dir: Path, image_url: str | None = None,
+                   page_url: str | None = None,
+                   gen_meta: dict | None = None) -> tuple[int, bool]:
+    """Register raw image bytes (web/Artifex ingest). Returns (image_id, created).
+
+    gen_meta (prompt/model_hash/seed/...) overrides anything parsed from the
+    bytes — the caller that generated the image knows better than PNG chunks.
+    """
+    import hashlib as _hashlib
+
+    info = inspect_image(data)
+    if gen_meta:
+        info.update({k: v for k, v in gen_meta.items() if v is not None})
+    sha = _hashlib.sha256(data).hexdigest()
+
+    row = conn.execute("SELECT id FROM images WHERE sha256 = ?", (sha,)).fetchone()
+    if row:
+        image_id, created = row["id"], False
+    else:
+        store_dir.mkdir(parents=True, exist_ok=True)
+        ext = (info.get("format") or "png").lower()
+        path = store_dir / f"{sha[:16]}.{ext}"
+        path.write_bytes(data)
+        cur = conn.execute(
+            """INSERT INTO images (sha256, width, height, format, file_size,
+                                   prompt, negative_prompt, model_hash, seed, gen_params_raw)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (sha, info["width"], info["height"], info["format"], len(data),
+             info.get("prompt"), info.get("negative_prompt"),
+             info.get("model_hash"), info.get("seed"), info.get("gen_params_raw")),
+        )
+        image_id, created = cur.lastrowid, True
+        conn.execute(
+            "INSERT INTO image_sources (image_id, kind, location) VALUES (?, 'local', ?)",
+            (image_id, str(path.resolve())),
+        )
+    for url in {u for u in (image_url, page_url) if u}:
+        conn.execute(
+            """INSERT INTO image_sources (image_id, kind, location) VALUES (?, 'url', ?)
+               ON CONFLICT (image_id, location) DO UPDATE SET last_verified = datetime('now')""",
+            (image_id, url),
+        )
+    return image_id, created
+
+
 def upsert_image(conn: sqlite3.Connection, path: Path) -> int | None:
     """Register a local file. Returns image id, or None if unreadable.
 
