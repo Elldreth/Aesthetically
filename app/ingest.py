@@ -176,20 +176,27 @@ def iter_image_files(folder: Path, recursive: bool = True) -> list[Path]:
 
 
 def run_folder_ingest(folder: Path, progress: dict, *, recursive: bool = True,
-                      post_steps: bool = True) -> None:
+                      post_steps: bool = True, cancel=None) -> None:
     """Register every image in a folder (read-only — files stay in place),
     then run the post-pipeline so new images arrive scored: phash → embed →
-    score with the latest taste head. progress is mutated for status polling.
+    score with the latest taste head. progress is mutated for status polling
+    (phase / done / total); cancel is an optional threading.Event.
 
     post_steps=False skips the GPU pipeline (tests, or embed-later flows).
     """
+    def cancelled() -> bool:
+        return cancel is not None and cancel.is_set()
+
     files = iter_image_files(folder, recursive=recursive)
-    progress.update(total=len(files), done=0, added=0, state="registering")
+    progress.update(total=len(files), done=0, added=0, phase="registering")
     from .db import get_conn
 
     db = get_conn()
     try:
         for n, f in enumerate(files, 1):
+            if cancelled():
+                db.commit()
+                return
             try:
                 data = f.read_bytes()
                 info = inspect_image(data)  # validates before registering
@@ -225,24 +232,27 @@ def run_folder_ingest(folder: Path, progress: dict, *, recursive: bool = True,
     finally:
         db.close()
 
-    if post_steps and progress["added"]:
-        progress["state"] = "hashing"
+    if post_steps and progress["added"] and not cancelled():
+        progress.update(phase="hashing", done=0, total=0)
         from .dedupe import fill_phashes
 
         db = get_conn()
         try:
-            fill_phashes(db)
+            fill_phashes(db, progress=progress, cancel=cancel)
         finally:
             db.close()
 
-        progress["state"] = "embedding"
-        from .embed import backfill
+        if not cancelled():
+            progress.update(phase="embedding", done=0, total=0)
+            from .embed import backfill
 
-        backfill()
+            backfill(progress=progress, cancel=cancel)
 
-        progress["state"] = "scoring"
-        _score_unscored(progress)
-    progress["state"] = "done"
+        if not cancelled():
+            progress.update(phase="scoring", done=0, total=0)
+            _score_unscored(progress)
+    progress["phase"] = "cancelled" if cancelled() else "done"
+    return {"added": progress.get("added", 0), "scored": progress.get("scored", 0)}
 
 
 def _score_unscored(progress: dict) -> None:

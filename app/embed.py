@@ -99,7 +99,7 @@ def _local_path(db: sqlite3.Connection, image_id: int) -> str | None:
     return None
 
 
-def backfill(batch_size: int = 32) -> None:
+def backfill(batch_size: int = 32, progress: dict | None = None, cancel=None) -> None:
     db = get_conn()
     todo = [
         r["id"] for r in db.execute(
@@ -110,12 +110,17 @@ def backfill(batch_size: int = 32) -> None:
         )
     ]
     print(f"{len(todo)} images to embed with {MODEL_NAME}")
+    if progress is not None:
+        progress["total"] = len(todo)
+        progress["done"] = 0
     if not todo:
         return
     _load_model()
     t0 = time.time()
     done = 0
     for start in range(0, len(todo), batch_size):
+        if cancel is not None and cancel.is_set():
+            return
         chunk = todo[start:start + batch_size]
         pils, ids = [], []
         for image_id in chunk:
@@ -124,6 +129,7 @@ def backfill(batch_size: int = 32) -> None:
                 continue
             try:
                 with Image.open(path) as img:
+                    img.draft("RGB", (512, 512))   # downscale big originals on decode
                     pils.append(img.convert("RGB"))
                 ids.append(image_id)
             except Exception as e:
@@ -137,6 +143,8 @@ def backfill(batch_size: int = 32) -> None:
         )
         db.commit()
         done += len(ids)
+        if progress is not None:
+            progress["done"] = start + len(chunk)
         if done % (batch_size * 10) < batch_size:
             rate = done / (time.time() - t0)
             print(f"  {done}/{len(todo)}  ({rate:.1f} img/s, ~{(len(todo)-done)/rate:.0f}s left)")

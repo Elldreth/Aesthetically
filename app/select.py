@@ -62,7 +62,7 @@ def run_select(out: Path, *, top: int | None = None, min_score: float | None = N
         cands = cands[:top]
     elif min_score is not None:
         cands = [c for c in cands if c["score"] >= min_score]
-    progress.update(total=len(cands), done=0, state="transferring")
+    progress.update(total=len(cands), done=0, phase="exporting")
     n = 0
     for c in cands:
         name = f"{c['score']:.3f}_{c['id']}{Path(c['path']).suffix.lower()}"
@@ -74,7 +74,7 @@ def run_select(out: Path, *, top: int | None = None, min_score: float | None = N
         _transfer(c["path"], dst, mode)
         n += 1
         progress["done"] = n
-    progress["state"] = "done"
+    progress["phase"] = "done"
     return {"count": n, "out": str(out),
             "min_score_taken": round(cands[-1]["score"], 3) if cands else None}
 

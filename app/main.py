@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from .db import DATA_DIR, get_conn
 from .ingest import DECODE_ERRORS, register_bytes
+from .jobs import manager as jobs
 
 log = logging.getLogger("aesthetically")
 
@@ -560,8 +561,18 @@ def undo(body: UndoIn):
         return {"image_id": row["image_id"], "kind": row["kind"], "value": row["value"]}
 
 
-_folder_job: dict = {"state": "idle"}
-_folder_job_lock = __import__("threading").Lock()
+# ---- unified background job queue ----
+
+
+@app.get("/api/jobs")
+def jobs_list():
+    """All jobs (queued/running/recent) for the header status indicator."""
+    return {"items": jobs.list_jobs(), "active": jobs.active_count()}
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+def jobs_cancel(job_id: int):
+    return {"cancelled": jobs.cancel(job_id)}
 
 
 class IngestFolderIn(BaseModel):
@@ -571,10 +582,7 @@ class IngestFolderIn(BaseModel):
 
 @app.post("/api/ingest_folder")
 def ingest_folder(body: IngestFolderIn):
-    """Register every image in a local folder (read-only), then hash/embed/
-    score so they arrive in the queue ready to rate. One job at a time."""
-    import threading
-
+    """Register a folder (read-only), then hash/embed/score — queued as a job."""
     from .ingest import run_folder_ingest
 
     folder = _clean_path(body.path)
@@ -582,29 +590,12 @@ def ingest_folder(body: IngestFolderIn):
         raise HTTPException(422, "not a folder the server can see — check the path "
                             "(remove surrounding quotes; mapped drives must be visible "
                             "to the server)")
-    with _folder_job_lock:
-        if _folder_job["state"] not in ("idle", "done", "failed"):
-            raise HTTPException(409, "an ingest job is already running")
-        _folder_job.clear()
-        _folder_job.update(state="starting", path=str(folder), total=0, done=0, added=0)
-
-    def work():
-        try:
-            run_folder_ingest(folder, _folder_job, recursive=body.recursive)
-        except Exception:
-            log.exception("folder ingest failed")
-            _folder_job["state"] = "failed"
-
-    threading.Thread(target=work, daemon=True).start()
-    return {"started": True, "path": str(folder)}
-
-
-@app.get("/api/ingest_folder/status")
-def ingest_folder_status():
-    return dict(_folder_job)
-
-
-_select_job: dict = {"state": "idle"}
+    job = jobs.submit(
+        "ingest", str(folder),
+        lambda progress, cancel: run_folder_ingest(
+            folder, progress, recursive=body.recursive, cancel=cancel),
+    )
+    return {"started": True, "job_id": job.id}
 
 
 class SelectIn(BaseModel):
@@ -618,10 +609,7 @@ class SelectIn(BaseModel):
 
 @app.post("/api/select")
 def select_images(body: SelectIn):
-    """Export top-predicted images to a folder (copy/link/move, optional
-    score-decile grouping). Background job; poll /api/select/status."""
-    import threading
-
+    """Export top-predicted images from the collection to a folder — queued."""
     from .select import run_select
 
     if not (body.top or body.min_score is not None or body.buckets):
@@ -629,28 +617,13 @@ def select_images(body: SelectIn):
     out = _clean_path(body.out)
     if out.exists() and not out.is_dir():
         raise HTTPException(422, "out exists and is not a folder")
-    if _select_job.get("state") in ("transferring", "starting"):
-        raise HTTPException(409, "a selection job is already running")
-    _select_job.clear()
-    _select_job.update(state="starting", out=str(out))
-
-    def work():
-        try:
-            res = run_select(out, top=body.top, min_score=body.min_score,
-                             buckets=body.buckets, unlabeled_only=body.unlabeled_only,
-                             mode=body.mode, progress=_select_job)
-            _select_job.update(res)
-        except Exception:
-            log.exception("selection failed")
-            _select_job["state"] = "failed"
-
-    threading.Thread(target=work, daemon=True).start()
-    return {"started": True, "out": str(out)}
-
-
-@app.get("/api/select/status")
-def select_status():
-    return dict(_select_job)
+    job = jobs.submit(
+        "export", str(out),
+        lambda progress, cancel: run_select(
+            out, top=body.top, min_score=body.min_score, buckets=body.buckets,
+            unlabeled_only=body.unlabeled_only, mode=body.mode, progress=progress),
+    )
+    return {"started": True, "job_id": job.id}
 
 
 # ---- folder scoring (persisted, kept out of the training collection) ----
@@ -659,7 +632,9 @@ def select_status():
 # restarts. Result thumbnails are served as /scan/img/{scan_id}/{rank} where
 # rank is the position in score-desc order — a stable, persistent address, so
 # a lingering page can never show a different scan's image.
-_scan_job: dict = {"state": "idle", "scan_id": 0}
+
+_JOB_STATE_TO_SCAN = {"queued": "starting", "running": "scoring",
+                      "done": "done", "failed": "failed", "cancelled": "done"}
 
 
 def _latest_scan_id(db) -> int | None:
@@ -673,9 +648,7 @@ class ScanIn(BaseModel):
 
 @app.post("/api/scan")
 def scan_folder(body: ScanIn):
-    """Score a folder WITHOUT adding it to the collection. Persisted as a scan."""
-    import threading
-
+    """Score a folder WITHOUT adding it to the collection. Persisted; queued."""
     from .scan import MODEL_NAME, run_scan
     from .scorer import latest_head
 
@@ -684,8 +657,6 @@ def scan_folder(body: ScanIn):
         raise HTTPException(422, "not a folder the server can see — check the path "
                             "(remove surrounding quotes; mapped drives must be visible "
                             "to the server)")
-    if _scan_job.get("state") in ("starting", "scoring"):
-        raise HTTPException(409, "a scan is already running")
     head = latest_head()
     if head is None:
         raise HTTPException(409, "no taste model yet — rate and train first")
@@ -695,23 +666,24 @@ def scan_folder(body: ScanIn):
             (str(folder), head["name"], MODEL_NAME),
         )
         scan_id = cur.lastrowid
-    _scan_job.clear()
-    _scan_job.update(state="starting", path=str(folder), scan_id=scan_id, done=0, total=0)
-
-    def work():
-        try:
-            run_scan(folder, scan_id, _scan_job)
-        except Exception:
-            log.exception("scan failed")
-            _scan_job["state"] = "failed"
-
-    threading.Thread(target=work, daemon=True).start()
+    jobs.submit(
+        "scan", str(folder),
+        lambda progress, cancel: run_scan(folder, scan_id, progress, cancel=cancel),
+    )
     return {"started": True, "scan_id": scan_id}
 
 
 @app.get("/api/scan/status")
 def scan_status():
-    return dict(_scan_job)
+    """Shape kept for scan.html: maps the latest scan job to state/scan_id/…"""
+    job = jobs.latest("scan")
+    if job is None:
+        return {"state": "idle", "scan_id": None}
+    p = job.progress
+    return {"state": _JOB_STATE_TO_SCAN.get(job.state, job.state),
+            "scan_id": p.get("scan_id"), "path": job.label,
+            "done": p.get("done", 0), "total": p.get("total", 0),
+            "model": p.get("model")}
 
 
 @app.get("/api/scans")

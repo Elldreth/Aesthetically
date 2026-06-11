@@ -96,6 +96,13 @@ function initNav(activeTab) {
 
   const right = document.createElement('div');
   right.className = 'nav-spacer';
+  const jobsBtn = document.createElement('button');
+  jobsBtn.className = 'btn btn-quiet';
+  jobsBtn.id = 'jobs-indicator';
+  jobsBtn.title = 'Background jobs';
+  jobsBtn.innerHTML = '<span class="jobs-dot" hidden></span><span id="jobs-label">Jobs</span>';
+  jobsBtn.addEventListener('click', _toggleJobsPanel);
+  right.appendChild(jobsBtn);
   const add = document.createElement('button');
   add.className = 'btn btn-quiet';
   add.textContent = 'Add folder';
@@ -124,7 +131,117 @@ function initNav(activeTab) {
   header.appendChild(right);
 
   document.body.prepend(header);
+  _jobsPoll();
   return header;
+}
+
+/* ---------- background jobs indicator + panel ---------- */
+
+let _jobsTimer = null;
+const KIND_LABEL = { ingest: 'Add folder', scan: 'Score folder', export: 'Export' };
+
+function _shortPath(p) {
+  if (!p) return '';
+  return p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p;
+}
+
+function _updateIndicator(data) {
+  const dot = document.querySelector('#jobs-indicator .jobs-dot');
+  const label = document.getElementById('jobs-label');
+  if (!label) return;
+  if (data.active > 0) {
+    dot.hidden = false;
+    label.textContent = `Jobs · ${data.active}`;
+  } else {
+    dot.hidden = true;
+    label.textContent = 'Jobs';
+  }
+}
+
+function _renderJobsPanel(items) {
+  const panel = document.getElementById('jobs-panel');
+  if (!panel) return;
+  const body = panel.querySelector('.jobs-body');
+  body.textContent = '';
+  if (!items.length) {
+    const e = document.createElement('p');
+    e.className = 'dim'; e.style.padding = '12px';
+    e.textContent = 'No jobs yet.';
+    body.appendChild(e);
+    return;
+  }
+  for (const j of items.slice().reverse()) {
+    const row = document.createElement('div');
+    row.className = 'job-row';
+    const title = document.createElement('div');
+    title.className = 'job-title';
+    const k = document.createElement('span');
+    k.textContent = `${KIND_LABEL[j.kind] || j.kind}: ${_shortPath(j.label)}`;
+    const st = document.createElement('span');
+    st.className = 'badge ' + (j.state === 'done' ? 'ok' : j.state === 'failed' ? 'fail'
+      : (j.state === 'running' || j.state === 'queued') ? 'busy' : '');
+    st.textContent = j.state === 'running' ? (j.phase || 'running') : j.state;
+    title.append(k, st);
+    row.appendChild(title);
+    if (j.state === 'running' || j.state === 'queued') {
+      const bar = document.createElement('div');
+      bar.className = 'job-bar';
+      const fill = document.createElement('div');
+      fill.style.width = j.total ? `${Math.round(100 * j.done / j.total)}%` : '0%';
+      bar.appendChild(fill);
+      row.appendChild(bar);
+      const meta = document.createElement('div');
+      meta.className = 'job-meta';
+      meta.textContent = j.total ? `${j.phase || ''} ${j.done}/${j.total}` : (j.phase || 'starting…');
+      const cancel = document.createElement('button');
+      cancel.className = 'toast-action'; cancel.textContent = 'Cancel';
+      cancel.addEventListener('click', async () => {
+        try { await api(`/api/jobs/${j.id}/cancel`, {}); _jobsPoll(true); } catch {}
+      });
+      meta.appendChild(cancel);
+      row.appendChild(meta);
+    } else if (j.error) {
+      const m = document.createElement('div');
+      m.className = 'job-meta dim'; m.textContent = j.error;
+      row.appendChild(m);
+    } else if (j.result && j.result.added != null) {
+      const m = document.createElement('div');
+      m.className = 'job-meta dim'; m.textContent = `added ${j.result.added}`;
+      row.appendChild(m);
+    } else if (j.result && j.result.count != null) {
+      const m = document.createElement('div');
+      m.className = 'job-meta dim'; m.textContent = `exported ${j.result.count}`;
+      row.appendChild(m);
+    }
+    body.appendChild(row);
+  }
+}
+
+async function _jobsPoll(force) {
+  if (_jobsTimer) { clearTimeout(_jobsTimer); _jobsTimer = null; }
+  let data;
+  try { data = await api('/api/jobs'); } catch { return; }
+  _updateIndicator(data);
+  const panelOpen = !!document.querySelector('#jobs-panel:not([hidden])');
+  if (panelOpen) _renderJobsPanel(data.items);
+  if (data.active > 0 || panelOpen || force) {
+    _jobsTimer = setTimeout(() => _jobsPoll(), 1500);
+  }
+}
+
+function _toggleJobsPanel() {
+  let panel = document.getElementById('jobs-panel');
+  if (!panel) {
+    panel = document.createElement('div');
+    panel.id = 'jobs-panel';
+    panel.innerHTML = '<div class="jobs-head">Background jobs'
+      + '<button class="btn btn-quiet" id="jobs-close" aria-label="Close">✕</button></div>'
+      + '<div class="jobs-body"></div>';
+    document.body.appendChild(panel);
+    panel.querySelector('#jobs-close').addEventListener('click', () => { panel.hidden = true; });
+  }
+  panel.hidden = !panel.hidden;
+  if (!panel.hidden) _jobsPoll(true);
 }
 
 /* ---------- help overlay ---------- */
@@ -234,7 +351,8 @@ function _openAddFolder() {
     try {
       await api('/api/ingest_folder', { path });
       backdrop.remove();
-      _pollFolderJob();
+      toast('Folder queued — open Jobs to watch progress');
+      _jobsPoll(true);
     } catch (e) {
       go.disabled = false;
       toast('Could not start: ' + e.message);
@@ -385,7 +503,8 @@ function _openExportBest() {
     try {
       await api('/api/select', body);
       backdrop.remove();
-      _pollSelectJob();
+      toast('Export queued — open Jobs to watch progress');
+      _jobsPoll(true);
     } catch (e) {
       go.disabled = false;
       toast('Could not start: ' + e.message);
@@ -405,44 +524,3 @@ function _openExportBest() {
   out.focus();
 }
 
-async function _pollSelectJob() {
-  let status = null;
-  const timer = setInterval(async () => {
-    try {
-      const s = await api('/api/select/status');
-      status?.dismiss();
-      if (s.state === 'done') {
-        clearInterval(timer);
-        toast(`Exported ${s.count} image${s.count === 1 ? '' : 's'} to ${s.out}`
-          + (s.min_score_taken != null ? ` (score ≥ ${s.min_score_taken})` : ''));
-      } else if (s.state === 'failed') {
-        clearInterval(timer);
-        toast('Export failed — check the server log');
-      } else {
-        status = toast(`exporting… ${s.done || 0}/${s.total || '?'}`);
-      }
-    } catch { /* keep polling */ }
-  }, 1500);
-}
-
-async function _pollFolderJob() {
-  let status = null;
-  const timer = setInterval(async () => {
-    try {
-      const s = await api('/api/ingest_folder/status');
-      status?.dismiss();
-      if (s.state === 'done') {
-        clearInterval(timer);
-        toast(`Folder added: ${s.added} new image${s.added === 1 ? '' : 's'}`
-          + (s.scored ? ', scored and queued' : '')
-          + ' — refresh to see them',
-          { action: { label: 'Refresh', onClick: () => location.reload() } });
-      } else if (s.state === 'failed') {
-        clearInterval(timer);
-        toast('Folder ingest failed — check the server log');
-      } else {
-        status = toast(`${s.state}… ${s.done || 0}/${s.total || '?'}`);
-      }
-    } catch { /* server briefly busy — keep polling */ }
-  }, 2000);
-}

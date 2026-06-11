@@ -194,6 +194,37 @@ kbd {
 .shortcut-row .desc { color: var(--text-dim); }
 .overlay-panel .close-hint { margin-top: 12px; font-size: 12px; color: var(--text-dim); }
 
+/* ---------- jobs indicator + panel ---------- */
+
+#jobs-indicator { gap: 6px; }
+.jobs-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--accent);
+  animation: jobs-pulse 1.2s ease-in-out infinite;
+}
+@keyframes jobs-pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
+
+#jobs-panel {
+  position: fixed; top: 44px; right: 0; bottom: 0; width: 360px; max-width: 90vw;
+  z-index: 900; background: var(--surface); border-left: 1px solid var(--surface-3);
+  box-shadow: -8px 0 24px rgba(0,0,0,.35); display: flex; flex-direction: column;
+}
+#jobs-panel[hidden] { display: none; }
+.jobs-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 14px; font-weight: 600; border-bottom: 1px solid var(--border);
+}
+.jobs-body { overflow-y: auto; flex: 1; }
+.job-row { padding: 10px 14px; border-bottom: 1px solid var(--border); }
+.job-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.job-title span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.job-bar { height: 4px; background: var(--surface-2); border-radius: 2px; margin: 7px 0 4px; }
+.job-bar > div { height: 100%; background: var(--accent); border-radius: 2px; transition: width .3s; }
+.job-meta {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  font-size: 12px; color: var(--text-dim); font-variant-numeric: tabular-nums;
+}
+
 /* ---------- motion ---------- */
 
 @media (prefers-reduced-motion: reduce) {

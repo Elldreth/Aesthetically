@@ -25,7 +25,7 @@ from .db import get_conn
 from .embed import MODEL_NAME, load_vectors
 
 
-def fill_phashes(db) -> None:
+def fill_phashes(db, progress: dict | None = None, cancel=None) -> None:
     import imagehash
 
     todo = db.execute(
@@ -34,8 +34,14 @@ def fill_phashes(db) -> None:
         " WHERE i.phash IS NULL GROUP BY i.id"
     ).fetchall()
     print(f"{len(todo)} images need phash")
+    if progress is not None:
+        progress["total"] = len(todo)
+        progress["done"] = 0
     t0 = time.time()
     for n, row in enumerate(todo, 1):
+        if cancel is not None and cancel.is_set():
+            db.commit()
+            return
         if not os.path.isfile(row["location"]):
             continue
         try:
@@ -47,6 +53,8 @@ def fill_phashes(db) -> None:
         db.execute("UPDATE images SET phash = ? WHERE id = ?", (h, row["id"]))
         if n % 50 == 0:
             db.commit()  # commit often — embed.py writes concurrently
+        if progress is not None:
+            progress["done"] = n
         if n % 500 == 0:
             print(f"  {n}/{len(todo)} ({n / (time.time() - t0):.0f}/s)")
     db.commit()

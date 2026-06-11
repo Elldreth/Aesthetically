@@ -42,7 +42,7 @@ def _decode_downscaled(data: bytes) -> Image.Image:
 
 
 def run_scan(folder: Path, scan_id: int, progress: dict, *,
-             recursive: bool = True) -> list[dict]:
+             recursive: bool = True, cancel=None) -> list[dict]:
     """Score every image in a folder, caching embeddings by content hash and
     persisting results under scan_id. Mutates progress for status polling."""
     head = latest_head()
@@ -51,7 +51,7 @@ def run_scan(folder: Path, scan_id: int, progress: dict, *,
     coef = np.array(head["coef"], dtype=np.float32)
     intercept = float(head["intercept"])
     files = iter_image_files(folder, recursive=recursive)
-    progress.update(total=len(files), done=0, state="scoring",
+    progress.update(total=len(files), done=0, phase="scoring",
                     model=head["name"], scan_id=scan_id)
 
     db = get_conn()
@@ -76,6 +76,9 @@ def run_scan(folder: Path, scan_id: int, progress: dict, *,
 
     try:
         for n, f in enumerate(files, 1):
+            if cancel is not None and cancel.is_set():
+                flush()
+                break
             try:
                 data = f.read_bytes()
             except OSError:
@@ -112,7 +115,7 @@ def run_scan(folder: Path, scan_id: int, progress: dict, *,
     finally:
         db.close()
 
-    progress.update(state="done", count=len(results))
+    progress.update(phase="done", count=len(results))
     return results
 
 
