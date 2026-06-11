@@ -534,6 +534,48 @@ def undo(body: UndoIn):
         return {"image_id": row["image_id"], "kind": row["kind"], "value": row["value"]}
 
 
+_folder_job: dict = {"state": "idle"}
+_folder_job_lock = __import__("threading").Lock()
+
+
+class IngestFolderIn(BaseModel):
+    path: str = Field(min_length=1, max_length=500)
+    recursive: bool = True
+
+
+@app.post("/api/ingest_folder")
+def ingest_folder(body: IngestFolderIn):
+    """Register every image in a local folder (read-only), then hash/embed/
+    score so they arrive in the queue ready to rate. One job at a time."""
+    import threading
+
+    from .ingest import run_folder_ingest
+
+    folder = Path(body.path)
+    if not folder.is_dir():
+        raise HTTPException(422, "not a folder the server can see")
+    with _folder_job_lock:
+        if _folder_job["state"] not in ("idle", "done", "failed"):
+            raise HTTPException(409, "an ingest job is already running")
+        _folder_job.clear()
+        _folder_job.update(state="starting", path=str(folder), total=0, done=0, added=0)
+
+    def work():
+        try:
+            run_folder_ingest(folder, _folder_job, recursive=body.recursive)
+        except Exception:
+            log.exception("folder ingest failed")
+            _folder_job["state"] = "failed"
+
+    threading.Thread(target=work, daemon=True).start()
+    return {"started": True, "path": str(folder)}
+
+
+@app.get("/api/ingest_folder/status")
+def ingest_folder_status():
+    return dict(_folder_job)
+
+
 class IngestIn(BaseModel):
     data_b64: str                  # raw image bytes, base64
     image_url: str | None = None   # where the bytes came from

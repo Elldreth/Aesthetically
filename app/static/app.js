@@ -96,6 +96,12 @@ function initNav(activeTab) {
 
   const right = document.createElement('div');
   right.className = 'nav-spacer';
+  const add = document.createElement('button');
+  add.className = 'btn btn-quiet';
+  add.textContent = 'Add folder';
+  add.title = 'Register a local image folder (files stay in place)';
+  add.addEventListener('click', _openAddFolder);
+  right.appendChild(add);
   const help = document.createElement('button');
   help.className = 'btn btn-quiet icon-btn';
   help.setAttribute('aria-label', 'Keyboard shortcuts');
@@ -174,3 +180,80 @@ function helpOverlay(shortcuts) {
 /* helpOverlayOpen() — pages can check it to suppress their own key handlers
    while the dialog is up. */
 function helpOverlayOpen() { return !!_helpEl; }
+
+/* ---------- add-folder dialog ---------- */
+
+function _openAddFolder() {
+  const backdrop = document.createElement('div');
+  backdrop.className = 'overlay-backdrop';
+  backdrop.addEventListener('click', e => { if (e.target === backdrop) backdrop.remove(); });
+
+  const panel = document.createElement('div');
+  panel.className = 'overlay-panel';
+  panel.setAttribute('role', 'dialog');
+  panel.setAttribute('aria-modal', 'true');
+  panel.setAttribute('aria-label', 'Add an image folder');
+
+  const h = document.createElement('h2');
+  h.textContent = 'Add an image folder';
+  const p = document.createElement('p');
+  p.className = 'dim';
+  p.style.marginBottom = '12px';
+  p.textContent = 'Registers every image in the folder (read-only — nothing is '
+    + 'moved or copied), then hashes, embeds and scores them so they join the '
+    + 'rating queue. Use a path this machine can see, e.g. a drive letter or UNC share.';
+  const input = document.createElement('input');
+  input.placeholder = 'D:\\images  or  \\\\server\\share\\folder';
+  input.style.width = '100%';
+  input.setAttribute('aria-label', 'Folder path');
+  const row = document.createElement('div');
+  row.style.cssText = 'display:flex;gap:8px;margin-top:12px;justify-content:flex-end';
+  const cancel = document.createElement('button');
+  cancel.className = 'btn btn-quiet';
+  cancel.textContent = 'Cancel';
+  cancel.addEventListener('click', () => backdrop.remove());
+  const go = document.createElement('button');
+  go.className = 'btn btn-primary';
+  go.textContent = 'Add';
+  go.addEventListener('click', async () => {
+    const path = input.value.trim();
+    if (!path) return;
+    go.disabled = true;
+    try {
+      await api('/api/ingest_folder', { path });
+      backdrop.remove();
+      _pollFolderJob();
+    } catch (e) {
+      go.disabled = false;
+      toast('Could not start: ' + e.message);
+    }
+  });
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') go.click(); });
+  row.append(cancel, go);
+  panel.append(h, p, input, row);
+  backdrop.appendChild(panel);
+  document.body.appendChild(backdrop);
+  input.focus();
+}
+
+async function _pollFolderJob() {
+  let status = null;
+  const timer = setInterval(async () => {
+    try {
+      const s = await api('/api/ingest_folder/status');
+      status?.dismiss();
+      if (s.state === 'done') {
+        clearInterval(timer);
+        toast(`Folder added: ${s.added} new image${s.added === 1 ? '' : 's'}`
+          + (s.scored ? ', scored and queued' : '')
+          + ' — refresh to see them',
+          { action: { label: 'Refresh', onClick: () => location.reload() } });
+      } else if (s.state === 'failed') {
+        clearInterval(timer);
+        toast('Folder ingest failed — check the server log');
+      } else {
+        status = toast(`${s.state}… ${s.done || 0}/${s.total || '?'}`);
+      }
+    } catch { /* server briefly busy — keep polling */ }
+  }, 2000);
+}

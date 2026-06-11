@@ -173,3 +173,108 @@ def upsert_image(conn: sqlite3.Connection, path: Path) -> int | None:
 def iter_image_files(folder: Path, recursive: bool = True) -> list[Path]:
     it = folder.rglob("*") if recursive else folder.glob("*")
     return sorted(p for p in it if p.is_file() and p.suffix.lower() in IMAGE_EXTS)
+
+
+def run_folder_ingest(folder: Path, progress: dict, *, recursive: bool = True,
+                      post_steps: bool = True) -> None:
+    """Register every image in a folder (read-only — files stay in place),
+    then run the post-pipeline so new images arrive scored: phash → embed →
+    score with the latest taste head. progress is mutated for status polling.
+
+    post_steps=False skips the GPU pipeline (tests, or embed-later flows).
+    """
+    files = iter_image_files(folder, recursive=recursive)
+    progress.update(total=len(files), done=0, added=0, state="registering")
+    from .db import get_conn
+
+    db = get_conn()
+    try:
+        for n, f in enumerate(files, 1):
+            try:
+                data = f.read_bytes()
+                info = inspect_image(data)  # validates before registering
+            except DECODE_ERRORS + (OSError,):
+                progress["done"] = n
+                continue
+            import hashlib
+
+            sha = hashlib.sha256(data).hexdigest()
+            row = db.execute("SELECT id FROM images WHERE sha256 = ?", (sha,)).fetchone()
+            if row:
+                image_id = row["id"]
+            else:
+                cur = db.execute(
+                    """INSERT INTO images (sha256, width, height, format, file_size,
+                                           prompt, negative_prompt, model_hash, seed, gen_params_raw)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (sha, info["width"], info["height"], info["format"], len(data),
+                     info.get("prompt"), info.get("negative_prompt"),
+                     info.get("model_hash"), info.get("seed"), info.get("gen_params_raw")),
+                )
+                image_id = cur.lastrowid
+                progress["added"] += 1
+            db.execute(
+                """INSERT INTO image_sources (image_id, kind, location) VALUES (?, 'local', ?)
+                   ON CONFLICT (image_id, location) DO UPDATE SET last_verified = datetime('now')""",
+                (image_id, str(f.resolve())),
+            )
+            progress["done"] = n
+            if n % 50 == 0:
+                db.commit()
+        db.commit()
+    finally:
+        db.close()
+
+    if post_steps and progress["added"]:
+        progress["state"] = "hashing"
+        from .dedupe import fill_phashes
+
+        db = get_conn()
+        try:
+            fill_phashes(db)
+        finally:
+            db.close()
+
+        progress["state"] = "embedding"
+        from .embed import backfill
+
+        backfill()
+
+        progress["state"] = "scoring"
+        _score_unscored(progress)
+    progress["state"] = "done"
+
+
+def _score_unscored(progress: dict) -> None:
+    """Predictions for embedded images that have none, using the latest head."""
+    import numpy as np
+
+    from .db import get_conn
+    from .embed import MODEL_NAME, load_vectors
+    from .scorer import latest_head
+
+    head = latest_head()
+    if head is None:
+        return
+    db = get_conn()
+    try:
+        todo = [r["id"] for r in db.execute(
+            """SELECT i.id FROM images i
+               WHERE EXISTS (SELECT 1 FROM embeddings e WHERE e.image_id = i.id AND e.model = ?)
+                 AND NOT EXISTS (SELECT 1 FROM predictions p WHERE p.image_id = i.id
+                                 AND p.model LIKE 'taste:%')""",
+            (MODEL_NAME,),
+        )]
+        if not todo:
+            return
+        ids, mat = load_vectors(db, MODEL_NAME, image_ids=todo)
+        logits = mat @ np.array(head["coef"], dtype=np.float32) + head["intercept"]
+        scores = 1.0 / (1.0 + np.exp(-logits))
+        db.executemany(
+            "INSERT OR REPLACE INTO predictions (image_id, model, score) VALUES (?, ?, ?)",
+            [(int(i), head["name"], float(s)) for i, s in zip(ids, scores)],
+        )
+        db.commit()
+        progress["scored"] = len(ids)
+    finally:
+        db.close()
