@@ -635,7 +635,13 @@ def select_status():
 
 # ---- ephemeral folder scoring (nothing enters the collection) ----
 
-_scan_job: dict = {"state": "idle"}
+# Each scan gets a monotonic job_id. Result images are served as
+# /scan/img/{job_id}/{index}; a request carrying a stale job_id is rejected
+# rather than silently serving an image from a *different* scan (the
+# results list is a single mutable global, and lazy-loaded thumbnails can
+# arrive after a new scan has replaced it).
+_scan_counter = __import__("itertools").count(1)
+_scan_job: dict = {"state": "idle", "job_id": 0}
 
 
 class ScanIn(BaseModel):
@@ -654,10 +660,11 @@ def scan_folder(body: ScanIn):
         raise HTTPException(422, "not a folder the server can see — check the path "
                             "(remove surrounding quotes; mapped drives must be visible "
                             "to the server)")
-    if _scan_job.get("state") == "scoring":
+    if _scan_job.get("state") in ("starting", "scoring"):
         raise HTTPException(409, "a scan is already running")
+    job_id = next(_scan_counter)
     _scan_job.clear()
-    _scan_job.update(state="starting", path=str(folder))
+    _scan_job.update(state="starting", path=str(folder), job_id=job_id)
 
     def work():
         try:
@@ -667,7 +674,7 @@ def scan_folder(body: ScanIn):
             _scan_job["state"] = "failed"
 
     threading.Thread(target=work, daemon=True).start()
-    return {"started": True}
+    return {"started": True, "job_id": job_id}
 
 
 @app.get("/api/scan/status")
@@ -681,14 +688,17 @@ def scan_status():
 def scan_results(limit: int = 60, offset: int = 0):
     results = _scan_job.get("results", [])
     return {"total": len(results), "model": _scan_job.get("model"),
-            "path": _scan_job.get("path"),
+            "path": _scan_job.get("path"), "job_id": _scan_job.get("job_id", 0),
             "items": [{"i": offset + j, "score": r["score"], "name": Path(r["path"]).name}
                       for j, r in enumerate(results[offset:offset + limit])]}
 
 
-@app.get("/scan/img/{index}")
-def scan_image(index: int):
-    """Serve a scanned file by result index — no arbitrary path access."""
+@app.get("/scan/img/{job_id}/{index}")
+def scan_image(job_id: int, index: int):
+    """Serve a scanned file by (job_id, index). A stale job_id 409s so a
+    lingering page can never show another scan's image."""
+    if job_id != _scan_job.get("job_id"):
+        raise HTTPException(409, "these results are stale — rescan the folder")
     results = _scan_job.get("results", [])
     if not (0 <= index < len(results)):
         raise HTTPException(404)

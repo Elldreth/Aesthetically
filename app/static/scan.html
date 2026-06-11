@@ -51,7 +51,7 @@ initNav(null);
 helpOverlay([['?', 'Toggle this help']]);
 const $ = id => document.getElementById(id);
 const LIMIT = 60;
-let shown = 0, total = 0;
+let shown = 0, total = 0, jobId = null;
 
 function setStatus(kind, text) {
   const b = $('status');
@@ -64,6 +64,9 @@ async function poll() {
   if (s.state === 'done') {
     setStatus('ok', `${s.count} images scored by ${s.model}`);
     $('export-group').hidden = false;
+    if (jobId !== s.job_id) {           // results belong to a different scan — reset
+      jobId = s.job_id; shown = 0; $('grid').textContent = '';
+    }
     if (!shown) loadMore();
   } else if (s.state === 'failed') {
     setStatus('fail', 'scan failed — see server log');
@@ -85,12 +88,13 @@ async function poll() {
 async function loadMore() {
   const data = await api(`/api/scan/results?limit=${LIMIT}&offset=${shown}`);
   total = data.total;
+  jobId = data.job_id;
   for (const it of data.items) {
     const c = document.createElement('div');
     c.className = 'cell';
     const img = document.createElement('img');
     img.loading = 'lazy';
-    img.src = '/scan/img/' + it.i;
+    img.src = `/scan/img/${jobId}/${it.i}`;
     img.alt = it.name;
     const sc = document.createElement('span');
     sc.className = 'score';
