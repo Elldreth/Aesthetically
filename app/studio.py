@@ -35,11 +35,26 @@ def _get_client(client: ArtifexClient | None) -> ArtifexClient:
     return _shared_client
 
 
+def _assert_artifex_free() -> None:
+    """Artifex shares one GPU — generation blocks while a LoRA trains. Fail
+    fast with a clear message instead of a multi-minute timeout."""
+    with get_conn() as db:
+        row = db.execute(
+            "SELECT id, name FROM training_runs WHERE status = 'running'"
+            " ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    if row:
+        raise RuntimeError(
+            f"Artifex is training run #{row['id']} ({row['name']}) — "
+            "wait for it to finish before generating/evaluating")
+
+
 def best_of_n(prompt: str, n: int = 4, model: str | None = None,
               size: str = "832x1216", loras: list | None = None,
               client: ArtifexClient | None = None) -> list[dict]:
     """Generate n seeds of a prompt, ingest each with authoritative metadata,
     score with the taste head, return ranked best-first."""
+    _assert_artifex_free()
     client = _get_client(client)
     head = latest_head()
     results = []
@@ -253,6 +268,7 @@ def eval_lora(run_id: int, lora_name: str | None = None,
     Metrics per arm: taste (head), adherence (SigLIP text-image cosine),
     fidelity (cosine to the training-set centroid), diversity (1 - mean
     pairwise sim across seeds). Rows land in eval_results."""
+    _assert_artifex_free()
     client = _get_client(client)
     head = latest_head()
     if head is None:

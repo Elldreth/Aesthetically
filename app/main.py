@@ -399,7 +399,11 @@ def rankings(limit: int = 50):
 # ---- studio: the Artifex closed loop ----
 
 def _studio_guard(e: Exception) -> HTTPException:
-    """Long stack traces and internal paths stay in the server log."""
+    """RuntimeError carries a user-actionable message (Artifex busy, too few
+    images, no model) — surface it. Everything else is masked; details go to
+    the server log."""
+    if isinstance(e, RuntimeError):
+        return HTTPException(409, str(e))
     log.exception("studio operation failed")
     return HTTPException(502, "operation failed — check the server log")
 
