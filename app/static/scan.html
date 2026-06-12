@@ -141,9 +141,10 @@ $('b-export').addEventListener('click', async () => {
   if (!out) return;
   $('b-export').disabled = true;
   try {
-    const r = await api('/api/scan/export',
+    await api('/api/scan/export',
       {out, scan_id: viewing, top: +$('exp-top').value, mode: $('exp-mode').value});
-    toast(`Exported ${r.exported} images to ${r.out}`);
+    toast('Export queued — open Jobs to watch progress');
+    if (typeof _jobsPoll === 'function') _jobsPoll(true);
   } catch (e) { toast('Export failed: ' + e.message); }
   $('b-export').disabled = false;
 });

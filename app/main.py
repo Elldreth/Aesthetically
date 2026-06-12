@@ -775,10 +775,36 @@ class ScanExportIn(BaseModel):
     mode: str = Field(default="copy", pattern="^(copy|link|move)$")
 
 
-@app.post("/api/scan/export")
-def scan_export(body: ScanExportIn):
+def _export_files(rows: list, out: Path, mode: str, progress: dict) -> dict:
+    """Copy/link/move scored files into out — runs as a background job."""
     import shutil
 
+    out.mkdir(parents=True, exist_ok=True)
+    progress.update(phase="exporting", total=len(rows), done=0)
+    n = 0
+    for i, r in enumerate(rows, 1):
+        src = Path(r["path"])
+        progress["done"] = i
+        if not src.is_file():
+            continue
+        dst = out / f"{r['score']:.3f}_{src.name}"
+        if dst.exists():
+            continue
+        if mode == "move":
+            shutil.move(src, dst)
+        elif mode == "link":
+            try:
+                os.link(src, dst)
+            except OSError:
+                shutil.copy2(src, dst)
+        else:
+            shutil.copy2(src, dst)
+        n += 1
+    return {"count": n, "out": str(out)}
+
+
+@app.post("/api/scan/export")
+def scan_export(body: ScanExportIn):
     with conn() as db:
         sid = body.scan_id if body.scan_id is not None else _latest_scan_id(db)
         if sid is None:
@@ -789,26 +815,11 @@ def scan_export(body: ScanExportIn):
             (sid, body.top),
         ).fetchall()
     out = _clean_path(body.out)
-    out.mkdir(parents=True, exist_ok=True)
-    n = 0
-    for r in rows:
-        src = Path(r["path"])
-        if not src.is_file():
-            continue
-        dst = out / f"{r['score']:.3f}_{src.name}"
-        if dst.exists():
-            continue
-        if body.mode == "move":
-            shutil.move(src, dst)
-        elif body.mode == "link":
-            try:
-                os.link(src, dst)
-            except OSError:
-                shutil.copy2(src, dst)
-        else:
-            shutil.copy2(src, dst)
-        n += 1
-    return {"exported": n, "out": str(out), "scan_id": sid}
+    job = jobs.submit(
+        "export", str(out),
+        lambda progress, cancel: _export_files([dict(r) for r in rows], out, body.mode, progress),
+    )
+    return {"started": True, "job_id": job.id, "scan_id": sid}
 
 
 class IngestIn(BaseModel):
