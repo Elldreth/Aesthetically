@@ -155,7 +155,7 @@ def _ui_response(page: str) -> Response:
 
 @app.get("/")
 def index():
-    return _ui_response("index.html")
+    return _ui_response("home.html")
 
 
 @app.get("/static/{page}.html")
@@ -909,6 +909,63 @@ def stats(session_id: int | None = None):
             out["session_count"] = row["n"]
             out["session_per_min"] = round(row["n"] / row["minutes"], 1) if row["minutes"] else None
         return out
+
+
+@app.get("/api/dashboard")
+def dashboard():
+    """Everything the Home page needs: collection counts, model status, and a
+    single state-driven 'next step' so the workflow is legible."""
+    from .scorer import latest_head
+
+    with conn() as db:
+        total = db.execute("SELECT count(*) AS n FROM images").fetchone()["n"]
+        by_value = {r["value"]: r["n"] for r in db.execute(
+            "SELECT value, count(*) AS n FROM current_labels WHERE kind='binary' GROUP BY value")}
+        excluded = db.execute(
+            "SELECT count(*) AS n FROM current_labels WHERE kind='exclude'").fetchone()["n"]
+        labeled_any = db.execute(
+            "SELECT count(DISTINCT image_id) AS n FROM current_labels"
+            " WHERE kind IN ('binary','exclude')").fetchone()["n"]
+        n_sources = db.execute(
+            "SELECT count(DISTINCT location) AS n FROM image_sources WHERE kind='local'"
+        ).fetchone()["n"]
+        head = latest_head()
+        labels_since = None
+        if head and head.get("trained_at"):
+            labels_since = db.execute(
+                "SELECT count(*) AS n FROM labels WHERE source='manual' AND kind='binary'"
+                " AND created_at > ?", (head["trained_at"],)).fetchone()["n"]
+
+    liked = by_value.get(1.0, 0)
+    collection = {
+        "total": total, "liked": liked, "maybe": by_value.get(0.5, 0),
+        "disliked": by_value.get(0.0, 0), "excluded": excluded,
+        "unlabeled": total - labeled_any, "sources": n_sources,
+    }
+    labeled = total - collection["unlabeled"]
+    model = None
+    if head:
+        m = head.get("metrics", {})
+        model = {"name": head.get("name"), "trained_at": head.get("trained_at"),
+                 "val_accuracy": m.get("val_accuracy"), "val_auc": m.get("val_auc"),
+                 "labels_since": labels_since}
+
+    # one suggested next action, by state
+    if total == 0:
+        nxt = {"action": "add", "label": "Add a folder of images to begin"}
+    elif labeled < 50:
+        nxt = {"action": "nav", "href": "/static/index.html",
+               "label": f"Rate {50 - labeled} more images to unlock training"}
+    elif model is None:
+        nxt = {"action": "train", "label": "Train your first taste model"}
+    elif (labels_since or 0) >= 50:
+        nxt = {"action": "train", "label": f"{labels_since} new ratings since last train — retrain"}
+    elif liked >= 6:
+        nxt = {"action": "nav", "href": "/static/tournament.html",
+               "label": "Rank your favorites in a tournament"}
+    else:
+        nxt = {"action": "nav", "href": "/static/index.html", "label": "Keep rating"}
+    return {"collection": collection, "model": model, "next": nxt}
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

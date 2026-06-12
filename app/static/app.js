@@ -66,7 +66,8 @@ function toast(message, { action } = {}) {
 
 function initNav(activeTab) {
   const tabs = [
-    ['rate', 'Rate', '/'],
+    ['home', 'Home', '/'],
+    ['rate', 'Rate', '/static/index.html'],
     ['grid', 'Grid', '/static/grid.html'],
     ['tournament', 'Tournament', '/static/tournament.html'],
     ['studio', 'Studio', '/static/studio.html'],
