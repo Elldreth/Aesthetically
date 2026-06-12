@@ -21,6 +21,11 @@ from .scorer import latest_head, score_images, store_embedding_and_score
 
 GEN_DIR = DATA_DIR / "generated"
 
+# Default taste-LoRA strength. 0.6 beat 0.8 in side-by-side tests on a matched
+# checkpoint — it refines toward the trained style without overpowering the
+# base (0.8 fought composition and only broke even).
+DEFAULT_LORA_WEIGHT = 0.6
+
 _shared_client: ArtifexClient | None = None
 
 
@@ -292,7 +297,7 @@ def eval_lora(run_id: int, lora_name: str | None = None,
             centroid /= np.linalg.norm(centroid)
     lora_name = lora_name or run["name"]
 
-    arms = {"base": None, "lora": [{"name": lora_name, "weight": 0.8}]}
+    arms = {"base": None, "lora": [{"name": lora_name, "weight": DEFAULT_LORA_WEIGHT}]}
     summary = {}
     with get_conn() as db:
         for arm, loras in arms.items():
