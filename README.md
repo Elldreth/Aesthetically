@@ -161,6 +161,7 @@ fake embeddings and a fake Artifex client.
 
 ## v1 legacy
 
-`main.py` (Tkinter rater), `imgsearch.py`, `create_yolo.py`, `inference.py`,
-`best.pt`, and the label folders are the original 2023 tool, kept for
-reference. Their labels were imported on 2026-06-11 (6,754 unique images).
+The original 2023 tool lives under [`legacy/`](legacy/) (Tkinter rater, the
+YOLO-as-classifier experiment, and the one-time folder→DB migration). Nothing
+in `app/` depends on it; see [`legacy/README.md`](legacy/README.md). Its labels
+were imported on 2026-06-11 (6,754 unique images).

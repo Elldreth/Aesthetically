@@ -2,6 +2,7 @@
 .venv/
 venv/
 __pycache__/
+.pytest_cache/
 
 # database & runtime data
 data/
@@ -14,8 +15,8 @@ liked_images/
 matches/
 maybes/
 
-# legacy model artifact
-best.pt
+# legacy v1 model artifact (now under legacy/)
+legacy/best.pt
 
 # local Claude Code settings
 .claude/settings.local.json
