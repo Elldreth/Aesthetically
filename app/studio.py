@@ -153,10 +153,11 @@ def _image_paths(db, image_ids: list[int]) -> list[tuple[int, str]]:
 
 
 def submit_lora(name: str, image_ids: list[int], *, steps: int = 1200, rank: int = 16,
-                lr: float = 1e-4, max_images: int = 60,
+                lr: float = 1e-4, max_images: int = 60, model: str | None = None,
                 client: ArtifexClient | None = None) -> dict:
     """Submit a style-LoRA job to Artifex from an explicit image-id list.
-    Caps to max_images by greedy diversity selection so the set stays varied."""
+    Caps to max_images by greedy diversity selection so the set stays varied.
+    model = the base checkpoint to train against (Artifex /v1/train 'model')."""
     from pathlib import Path
 
     client = _get_client(client)
@@ -183,6 +184,8 @@ def submit_lora(name: str, image_ids: list[int], *, steps: int = 1200, rank: int
         "auto_caption": True, "prune_tags": True, "sampling": "balance",
         # style recipe: content-diverse, captions describe content so style binds
     }
+    if model:
+        config["model"] = model            # base checkpoint to train against
     job = client.train(images=images, captions=[""] * len(images), **config)
 
     with get_conn() as db:

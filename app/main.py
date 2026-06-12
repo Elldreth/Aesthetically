@@ -503,6 +503,8 @@ class TrainClusterIn(BaseModel):
     image_ids: list[int] = Field(min_length=10, max_length=400)
     steps: int = Field(default=1200, ge=50, le=4000)
     rank: int = Field(default=16, ge=4, le=64)
+    model: str | None = None
+    max_images: int = Field(default=60, ge=10, le=200)
 
 
 @app.post("/api/studio/train_cluster_lora")
@@ -511,7 +513,8 @@ def studio_train_cluster_lora(body: TrainClusterIn):
 
     try:
         return studio.submit_lora(body.name, body.image_ids, steps=body.steps,
-                                  rank=body.rank)
+                                  rank=body.rank, model=body.model,
+                                  max_images=body.max_images)
     except Exception as e:
         raise _studio_guard(e)
 
