@@ -206,7 +206,8 @@ async function loadRuns() {
       '#' + run.id,
       run.name,
       null,                                                      // status badge
-      (fp.n || '?') + ' imgs · taste ' + (fp.mean_taste ?? '?'),
+      (fp.n || '?') + ' imgs' +
+        (fp.mean_pairwise_sim != null ? ' · cohesion ' + fp.mean_pairwise_sim : ''),
       run.artifact_path || '—',
     ];
     cells.forEach((text, i) => {

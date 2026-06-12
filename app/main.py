@@ -80,6 +80,11 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 VALID_BINARY = {0.0, 0.5, 1.0}
 
 
+_NOT_A_FOLDER_MSG = ("not a folder the server can see — check the path "
+                     "(remove surrounding quotes; mapped drives must be visible "
+                     "to the server)")
+
+
 def _clean_path(raw: str) -> Path:
     """Tolerate paths pasted with surrounding quotes (Windows 'Copy as path'
     wraps in double quotes) or stray whitespace."""
@@ -630,9 +635,7 @@ def ingest_folder(body: IngestFolderIn):
 
     folder = _clean_path(body.path)
     if not folder.is_dir():
-        raise HTTPException(422, "not a folder the server can see — check the path "
-                            "(remove surrounding quotes; mapped drives must be visible "
-                            "to the server)")
+        raise HTTPException(422, _NOT_A_FOLDER_MSG)
     job = jobs.submit(
         "ingest", str(folder),
         lambda progress, cancel: run_folder_ingest(
@@ -697,9 +700,7 @@ def scan_folder(body: ScanIn):
 
     folder = _clean_path(body.path)
     if not folder.is_dir():
-        raise HTTPException(422, "not a folder the server can see — check the path "
-                            "(remove surrounding quotes; mapped drives must be visible "
-                            "to the server)")
+        raise HTTPException(422, _NOT_A_FOLDER_MSG)
     head = latest_head()
     if head is None:
         raise HTTPException(409, "no taste model yet — rate and train first")

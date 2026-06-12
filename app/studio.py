@@ -240,8 +240,9 @@ def poll_run(run_id: int, client: ArtifexClient | None = None) -> dict:
             )
         elif state in ("failed", "cancelled") and run["status"] == "running":
             db.execute(
-                f"UPDATE training_runs SET status='{ 'failed' if state == 'failed' else 'cancelled' }',"
-                " finished_at=datetime('now') WHERE id=?", (run_id,),
+                "UPDATE training_runs SET status = ?, finished_at = datetime('now')"
+                " WHERE id = ?",
+                (state, run_id),
             )
     return {"run_id": run_id, "job": status}
 

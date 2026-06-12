@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS predictions (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (image_id, model)
 );
+CREATE INDEX IF NOT EXISTS idx_predictions_model ON predictions(model, image_id);
 
 -- Near-duplicate pairs surfaced by dedupe.py (image_id > dup_of_image_id never holds;
 -- canonical = lowest id in the connected component).
