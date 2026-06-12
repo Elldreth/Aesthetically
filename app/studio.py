@@ -15,7 +15,7 @@ from PIL import Image
 from io import BytesIO
 
 from .artifex_client import ArtifexClient
-from .db import DATA_DIR, get_conn
+from .db import DATA_DIR, conn
 from .embed import MODEL_NAME, load_vectors, text_features
 from .scorer import latest_head, score_images, store_embedding_and_score
 
@@ -43,7 +43,7 @@ def _get_client(client: ArtifexClient | None) -> ArtifexClient:
 def _assert_artifex_free() -> None:
     """Artifex shares one GPU — generation blocks while a LoRA trains. Fail
     fast with a clear message instead of a multi-minute timeout."""
-    with get_conn() as db:
+    with conn() as db:
         row = db.execute(
             "SELECT id, name FROM training_runs WHERE status = 'running'"
             " ORDER BY id DESC LIMIT 1"
@@ -75,7 +75,7 @@ def best_of_n(prompt: str, n: int = 4, model: str | None = None,
         results.append({"seed": seed, "data": data})
 
     ranked = []
-    with get_conn() as db:
+    with conn() as db:
         from .ingest import register_bytes
 
         for r in results:
@@ -117,7 +117,7 @@ def build_taste_dataset(k: int = 40) -> list[dict]:
 
     Ranking: Bradley-Terry strength when pairwise votes exist, else taste
     score, else recency. Diversity: greedy max-min in SigLIP space."""
-    with get_conn() as db:
+    with conn() as db:
         rows = db.execute(
             """SELECT i.id,
                       (SELECT score FROM predictions p WHERE p.image_id = i.id
@@ -166,7 +166,7 @@ def submit_lora(name: str, image_ids: list[int], *, steps: int = 1200, rank: int
     from pathlib import Path
 
     client = _get_client(client)
-    with get_conn() as db:
+    with conn() as db:
         pairs = _image_paths(db, image_ids)
         if len(pairs) < 10:
             raise RuntimeError(f"only {len(pairs)} usable images — need at least 10")
@@ -193,7 +193,7 @@ def submit_lora(name: str, image_ids: list[int], *, steps: int = 1200, rank: int
         config["model"] = model            # base checkpoint to train against
     job = client.train(images=images, captions=[""] * len(images), **config)
 
-    with get_conn() as db:
+    with conn() as db:
         sims = mat @ mat.T
         fingerprint = {
             "n": len(ids), "image_ids": ids,
@@ -225,7 +225,7 @@ def train_taste_lora(name: str, k: int = 40, steps: int = 1200, rank: int = 16,
 def poll_run(run_id: int, client: ArtifexClient | None = None) -> dict:
     """Proxy Artifex job state into training_runs; returns merged status."""
     client = _get_client(client)
-    with get_conn() as db:
+    with conn() as db:
         run = db.execute("SELECT * FROM training_runs WHERE id = ?", (run_id,)).fetchone()
         if not run:
             raise RuntimeError(f"no run {run_id}")
@@ -254,7 +254,7 @@ def default_probe_prompts(limit: int = 6) -> list[str]:
     carry no prompts (the v1 migration stripped metadata from hand labels)."""
     liked_filter = """JOIN current_labels c ON c.image_id = i.id
                       AND c.kind='binary' AND c.value=1.0"""
-    with get_conn() as db:
+    with conn() as db:
         for extra in (liked_filter, ""):
             rows = db.execute(
                 f"""SELECT DISTINCT i.prompt FROM images i {extra}
@@ -286,7 +286,7 @@ def eval_lora(run_id: int, lora_name: str | None = None,
     if not prompts:
         raise RuntimeError("no probe prompts available")
 
-    with get_conn() as db:
+    with conn() as db:
         run = db.execute("SELECT * FROM training_runs WHERE id = ?", (run_id,)).fetchone()
         if not run:
             raise RuntimeError(f"no run {run_id}")
@@ -300,7 +300,7 @@ def eval_lora(run_id: int, lora_name: str | None = None,
 
     arms = {"base": None, "lora": [{"name": lora_name, "weight": DEFAULT_LORA_WEIGHT}]}
     summary = {}
-    with get_conn() as db:
+    with conn() as db:
         for arm, loras in arms.items():
             taste_all, adhere_all, fid_all, div_all = [], [], [], []
             for prompt in prompts:

@@ -1,6 +1,7 @@
 """SQLite access layer. One file DB, WAL mode; schema applied once per process."""
 import sqlite3
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 APP_DIR = Path(__file__).resolve().parent
@@ -27,3 +28,16 @@ def get_conn(db_path: Path | None = None) -> sqlite3.Connection:
                 conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
                 _schema_applied.add(key)
     return conn
+
+
+@contextmanager
+def conn(db_path: Path | None = None):
+    """Scoped connection: commits on clean exit, rolls back on error, always
+    closes. Use this instead of bare get_conn() — a plain `with get_conn()`
+    commits but never closes the handle."""
+    db = get_conn(db_path)
+    try:
+        with db:
+            yield db
+    finally:
+        db.close()

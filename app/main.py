@@ -5,7 +5,7 @@ import base64
 import logging
 import os
 import secrets
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .db import DATA_DIR, get_conn
+from .db import DATA_DIR, conn, get_conn
 from .ingest import DECODE_ERRORS, register_bytes
 from .jobs import manager as jobs
 
@@ -142,17 +142,6 @@ class UndoIn(BaseModel):
 
 class SessionIn(BaseModel):
     name: str | None = None
-
-
-@contextmanager
-def conn():
-    """Per-request connection: commits on success, always closed."""
-    db = get_conn()
-    try:
-        with db:
-            yield db
-    finally:
-        db.close()
 
 
 def _ui_response(page: str) -> Response:

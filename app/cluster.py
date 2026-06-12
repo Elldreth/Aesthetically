@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from .db import get_conn
+from .db import conn
 from .embed import MODEL_NAME, load_vectors
 
 
@@ -19,15 +19,14 @@ def cluster_likes(min_cluster_size: int = 15) -> list[dict]:
     first. Each cluster: {cluster, size, cohesion, image_ids, samples}."""
     from sklearn.cluster import HDBSCAN
 
-    db = get_conn()
-    liked = [
-        r["image_id"] for r in db.execute(
-            "SELECT image_id FROM current_labels c WHERE c.kind='binary' AND c.value=1.0"
-            " AND NOT EXISTS (SELECT 1 FROM near_dups n WHERE n.image_id = c.image_id)"
-        )
-    ]
-    ids, mat = load_vectors(db, MODEL_NAME, image_ids=liked)
-    db.close()
+    with conn() as db:
+        liked = [
+            r["image_id"] for r in db.execute(
+                "SELECT image_id FROM current_labels c WHERE c.kind='binary' AND c.value=1.0"
+                " AND NOT EXISTS (SELECT 1 FROM near_dups n WHERE n.image_id = c.image_id)"
+            )
+        ]
+        ids, mat = load_vectors(db, MODEL_NAME, image_ids=liked)
     if len(ids) < min_cluster_size:
         return []
 
