@@ -68,16 +68,21 @@ def train(style: str | None = None) -> dict:
     if style is not None and style not in STYLES:
         raise ValueError(f"style must be one of {STYLES}")
 
+    # excluded images (depth maps, junk) never train, even if they carry a
+    # stale binary label
+    _not_excluded = ("AND NOT EXISTS (SELECT 1 FROM current_labels e"
+                     " WHERE e.image_id = c.image_id AND e.kind = 'exclude')")
     db = get_conn()
     if style:
         labeled = {r["image_id"]: r["value"] for r in db.execute(
             "SELECT c.image_id, c.value FROM current_labels c"
             " JOIN image_styles s ON s.image_id = c.image_id AND s.style = ?"
-            " WHERE c.kind = 'binary'", (style,))}
+            f" WHERE c.kind = 'binary' {_not_excluded}", (style,))}
         tag, file_prefix, del_pattern = f"taste:{style}", f"taste_{style}", f"taste:{style}:%"
     else:
         labeled = {r["image_id"]: r["value"] for r in db.execute(
-            "SELECT image_id, value FROM current_labels WHERE kind = 'binary'")}
+            f"SELECT c.image_id, c.value FROM current_labels c"
+            f" WHERE c.kind = 'binary' {_not_excluded}")}
         tag, file_prefix, del_pattern = "taste", "taste", "taste:v%"
 
     ids, mat = load_vectors(db, MODEL_NAME, image_ids=list(labeled))

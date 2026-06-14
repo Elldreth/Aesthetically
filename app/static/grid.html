@@ -40,6 +40,7 @@
         <option value="liked">liked</option>
         <option value="maybe">maybe</option>
         <option value="disliked">disliked</option>
+        <option value="removed">removed</option>
         <option value="all">everything</option>
       </select>
       <select id="mode" aria-label="Sort order">
@@ -71,6 +72,11 @@
     <div class="group" title="Set the style of selected images">
       <button class="btn" id="b-anime" disabled>→ Anime</button>
       <button class="btn" id="b-realistic" disabled>→ Realistic</button>
+    </div>
+    <div class="sep" role="presentation"></div>
+    <div class="group" title="Remove junk (depth maps, etc.) from the queue and training">
+      <button class="btn" id="b-remove" disabled>Remove</button>
+      <button class="btn" id="b-restore" disabled>Restore</button>
     </div>
     <div class="sep" role="presentation"></div>
     <div class="group">
@@ -170,7 +176,7 @@ function updateInfo() {
   $('info').textContent = `${total.toLocaleString()} ${$('filter').value}${shown}` +
     (selected.size ? ` · selected: ${selected.size}` : '');
   const none = !selected.size;
-  for (const id of ['b-nay', 'b-maybe', 'b-yay', 'b-anime', 'b-realistic'])
+  for (const id of ['b-nay', 'b-maybe', 'b-yay', 'b-anime', 'b-realistic', 'b-remove', 'b-restore'])
     $(id).disabled = none;
 }
 
@@ -200,6 +206,29 @@ async function setStyle(style) {
   load();
 }
 
+async function remove() {
+  if (!selected.size) return;
+  const ids = [...selected], n = ids.length;
+  try {
+    await api('/api/exclude/bulk', {image_ids: ids, session_id: sessionId});
+  } catch (e) { toast('Remove failed: ' + e.message); return; }
+  toast(`Removed ${n} image${n === 1 ? '' : 's'}`, {action: {label: 'Undo', onClick: async () => {
+    try { await api('/api/exclude/restore', {image_ids: ids}); } catch (e) { toast('Undo failed: ' + e.message); }
+    load();
+  }}});
+  load();
+}
+
+async function restore() {
+  if (!selected.size) return;
+  const n = selected.size;
+  try {
+    await api('/api/exclude/restore', {image_ids: [...selected]});
+    toast(`Restored ${n} image${n === 1 ? '' : 's'}`);
+  } catch (e) { toast('Restore failed: ' + e.message); return; }
+  load();
+}
+
 function nextPage() { if (offset + LIMIT < total) { offset += LIMIT; load(); } }
 function prevPage() { if (offset > 0) { offset = Math.max(0, offset - LIMIT); load(); } }
 
@@ -218,6 +247,8 @@ $('b-maybe').addEventListener('click', () => bulk(0.5));
 $('b-yay').addEventListener('click', () => bulk(1));
 $('b-anime').addEventListener('click', () => setStyle('anime'));
 $('b-realistic').addEventListener('click', () => setStyle('realistic'));
+$('b-remove').addEventListener('click', remove);
+$('b-restore').addEventListener('click', restore);
 $('b-next').addEventListener('click', nextPage);
 $('b-prev').addEventListener('click', prevPage);
 $('mode').addEventListener('change', () => { offset = 0; load(); });

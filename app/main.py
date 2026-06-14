@@ -249,6 +249,8 @@ _GRID_FILTER = {
     "liked": _LABELED + "1.0",
     "maybe": _LABELED + "0.5",
     "disliked": _LABELED + "0.0",
+    "removed": _SCORED_IMAGES + " JOIN current_labels c ON c.image_id = i.id"
+               " WHERE c.kind = 'exclude'",
     "all": _SCORED_IMAGES + " WHERE 1=1",
 }
 _GRID_ORDER = dict(_QUEUE_ORDER, newest="i.id DESC")
@@ -316,6 +318,37 @@ def bulk_label(body: BulkLabelIn):
             [(i, body.value, body.session_id) for i in body.image_ids],
         )
     return {"labeled": len(body.image_ids)}
+
+
+class BulkIdsIn(BaseModel):
+    image_ids: list[int] = Field(min_length=1, max_length=2000)
+    session_id: int | None = None
+
+
+@app.post("/api/exclude/bulk")
+def bulk_exclude(body: BulkIdsIn):
+    """Remove images (depth maps, junk) — excludes them from the queue and from
+    training. Reversible via /api/exclude/restore."""
+    with conn() as db:
+        _require_images(db, body.image_ids)
+        db.executemany(
+            "INSERT INTO labels (image_id, kind, value, source, session_id)"
+            " VALUES (?, 'exclude', 1, 'manual', ?)",
+            [(i, body.session_id) for i in body.image_ids],
+        )
+    return {"excluded": len(body.image_ids)}
+
+
+@app.post("/api/exclude/restore")
+def bulk_restore(body: BulkIdsIn):
+    """Un-remove: drop the exclude labels so the images return to the pool."""
+    with conn() as db:
+        placeholders = ",".join("?" * len(body.image_ids))
+        cur = db.execute(
+            f"DELETE FROM labels WHERE kind='exclude' AND image_id IN ({placeholders})",
+            body.image_ids,
+        )
+    return {"restored": cur.rowcount}
 
 
 @app.post("/api/train_taste")
