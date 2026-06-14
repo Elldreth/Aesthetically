@@ -47,6 +47,7 @@
       <div style="margin-top:10px">
         <div class="stat-line"><span>Rated</span><span class="v" id="c-rated">–</span></div>
         <div class="stat-line dim"><span>Unrated</span><span class="v" id="c-unrated">–</span></div>
+        <div class="stat-line dim"><span>Style</span><span class="v" id="c-style">–</span></div>
         <div class="stat-line dim"><span>Sources</span><span class="v" id="c-sources">–</span></div>
       </div>
       <div class="actions">
@@ -90,6 +91,7 @@ async function load() {
   $('c-sub').textContent = c.total === 1 ? 'image' : 'images';
   $('c-rated').textContent = (c.total - c.unlabeled).toLocaleString();
   $('c-unrated').textContent = c.unlabeled.toLocaleString();
+  $('c-style').textContent = `${(c.anime||0).toLocaleString()} anime · ${(c.realistic||0).toLocaleString()} real`;
   $('c-sources').textContent = c.sources.toLocaleString();
   $('l-yay').textContent = c.liked.toLocaleString();
   $('l-maybe').textContent = c.maybe.toLocaleString();

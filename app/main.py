@@ -241,30 +241,40 @@ _SCORED_IMAGES = """
                   LIMIT 1) AS score
           FROM images i) i
 """
+# every fragment ends with a WHERE so a style clause can append uniformly
+_LABELED = (_SCORED_IMAGES + " JOIN current_labels c ON c.image_id = i.id"
+            " WHERE c.kind = 'binary' AND c.value = ")
 _GRID_FILTER = {
     "unrated": _UNRATED,
-    "liked": _SCORED_IMAGES + " JOIN current_labels c ON c.image_id = i.id"
-             " AND c.kind = 'binary' AND c.value = 1.0",
-    "maybe": _SCORED_IMAGES + " JOIN current_labels c ON c.image_id = i.id"
-             " AND c.kind = 'binary' AND c.value = 0.5",
-    "disliked": _SCORED_IMAGES + " JOIN current_labels c ON c.image_id = i.id"
-                " AND c.kind = 'binary' AND c.value = 0.0",
+    "liked": _LABELED + "1.0",
+    "maybe": _LABELED + "0.5",
+    "disliked": _LABELED + "0.0",
     "all": _SCORED_IMAGES + " WHERE 1=1",
 }
 _GRID_ORDER = dict(_QUEUE_ORDER, newest="i.id DESC")
+_STYLE_CLAUSE = {
+    "anime": " AND EXISTS (SELECT 1 FROM image_styles st WHERE st.image_id=i.id AND st.style='anime')",
+    "realistic": " AND EXISTS (SELECT 1 FROM image_styles st WHERE st.image_id=i.id AND st.style='realistic')",
+    "untagged": " AND NOT EXISTS (SELECT 1 FROM image_styles st WHERE st.image_id=i.id)",
+}
 
 
 @app.get("/api/grid")
 def grid(mode: str = "worst", limit: int = 60, offset: int = 0,
-         filter: str = "unrated"):
+         filter: str = "unrated", style: str | None = None):
     """Paged images for the grid, sorted by taste score. filter selects the
-    label bucket; rated images stay browsable (newest mode shows recent work)."""
+    label bucket; style (anime/realistic/untagged) optionally narrows further."""
     order = _GRID_ORDER.get(mode)
     source = _GRID_FILTER.get(filter)
     if order is None:
         raise HTTPException(422, f"mode must be one of {sorted(_GRID_ORDER)}")
     if source is None:
         raise HTTPException(422, f"filter must be one of {sorted(_GRID_FILTER)}")
+    if style:
+        clause = _STYLE_CLAUSE.get(style)
+        if clause is None:
+            raise HTTPException(422, f"style must be one of {sorted(_STYLE_CLAUSE)}")
+        source = source + clause
     with conn() as db:
         total = db.execute(f"SELECT count(*) AS n {source}").fetchone()["n"]
         rows = db.execute(
@@ -932,6 +942,8 @@ def dashboard():
         n_sources = db.execute(
             "SELECT count(DISTINCT location) AS n FROM image_sources WHERE kind='local'"
         ).fetchone()["n"]
+        styles = {r["style"]: r["n"] for r in db.execute(
+            "SELECT style, count(*) AS n FROM image_styles GROUP BY style")}
         head = latest_head()
         labels_since = None
         if head and head.get("trained_at"):
@@ -944,6 +956,7 @@ def dashboard():
         "total": total, "liked": liked, "maybe": by_value.get(0.5, 0),
         "disliked": by_value.get(0.0, 0), "excluded": excluded,
         "unlabeled": total - labeled_any, "sources": n_sources,
+        "anime": styles.get("anime", 0), "realistic": styles.get("realistic", 0),
     }
     labeled = total - collection["unlabeled"]
     model = None
@@ -969,6 +982,34 @@ def dashboard():
     else:
         nxt = {"action": "nav", "href": "/static/index.html", "label": "Keep rating"}
     return {"collection": collection, "model": model, "next": nxt}
+
+
+@app.get("/api/styles")
+def styles_counts():
+    from . import styles
+    return styles.counts()
+
+
+@app.post("/api/styles/classify")
+def styles_classify():
+    from . import styles
+    job = jobs.submit("classify", "style tagging",
+                      lambda progress, cancel: styles.classify_styles(progress, cancel))
+    return {"started": True, "job_id": job.id}
+
+
+class SetStyleIn(BaseModel):
+    image_ids: list[int] = Field(min_length=1, max_length=2000)
+    style: str = Field(pattern="^(anime|realistic)$")
+
+
+@app.post("/api/styles/set")
+def styles_set(body: SetStyleIn):
+    from . import styles
+
+    with conn() as db:
+        _require_images(db, body.image_ids)
+    return {"updated": styles.set_style(body.image_ids, body.style)}
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

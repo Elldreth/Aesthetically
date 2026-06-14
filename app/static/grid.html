@@ -49,6 +49,12 @@
         <option value="newest">newest first</option>
         <option value="default">oldest first</option>
       </select>
+      <select id="style" aria-label="Style" title="Filter by style">
+        <option value="">all styles</option>
+        <option value="anime">anime</option>
+        <option value="realistic">realistic</option>
+        <option value="untagged">untagged</option>
+      </select>
     </div>
     <div class="sep" role="presentation"></div>
     <div class="group">
@@ -60,6 +66,11 @@
       <button class="btn btn-nay" id="b-nay" disabled>Nay <kbd>a</kbd></button>
       <button class="btn btn-maybe" id="b-maybe" disabled>Maybe <kbd>w</kbd></button>
       <button class="btn btn-yay" id="b-yay" disabled>Yay <kbd>d</kbd></button>
+    </div>
+    <div class="sep" role="presentation"></div>
+    <div class="group" title="Set the style of selected images">
+      <button class="btn" id="b-anime" disabled>→ Anime</button>
+      <button class="btn" id="b-realistic" disabled>→ Realistic</button>
     </div>
     <div class="sep" role="presentation"></div>
     <div class="group">
@@ -91,7 +102,8 @@ let sessionId = null, offset = 0, total = 0, items = [], selected = new Set();
 const $ = id => document.getElementById(id);
 
 async function load() {
-  const data = await api(`/api/grid?mode=${$('mode').value}&filter=${$('filter').value}&limit=${LIMIT}&offset=${offset}`);
+  const data = await api(`/api/grid?mode=${$('mode').value}&filter=${$('filter').value}` +
+    `&style=${$('style').value}&limit=${LIMIT}&offset=${offset}`);
   items = data.items; total = data.total; selected.clear();
   const g = $('grid');
   g.textContent = '';
@@ -158,9 +170,8 @@ function updateInfo() {
   $('info').textContent = `${total.toLocaleString()} ${$('filter').value}${shown}` +
     (selected.size ? ` · selected: ${selected.size}` : '');
   const none = !selected.size;
-  $('b-nay').disabled = none;
-  $('b-maybe').disabled = none;
-  $('b-yay').disabled = none;
+  for (const id of ['b-nay', 'b-maybe', 'b-yay', 'b-anime', 'b-realistic'])
+    $(id).disabled = none;
 }
 
 async function bulk(value) {
@@ -176,6 +187,16 @@ async function bulk(value) {
     } catch (e) { toast('Undo failed: ' + e.message); }
     load();
   }}});
+  load();
+}
+
+async function setStyle(style) {
+  if (!selected.size) return;
+  const n = selected.size;
+  try {
+    await api('/api/styles/set', {image_ids: [...selected], style});
+    toast(`Set ${n} image${n === 1 ? '' : 's'} to ${style}`);
+  } catch (e) { toast('Set style failed: ' + e.message); return; }
   load();
 }
 
@@ -195,10 +216,13 @@ $('b-none').addEventListener('click', () => {
 $('b-nay').addEventListener('click', () => bulk(0));
 $('b-maybe').addEventListener('click', () => bulk(0.5));
 $('b-yay').addEventListener('click', () => bulk(1));
+$('b-anime').addEventListener('click', () => setStyle('anime'));
+$('b-realistic').addEventListener('click', () => setStyle('realistic'));
 $('b-next').addEventListener('click', nextPage);
 $('b-prev').addEventListener('click', prevPage);
 $('mode').addEventListener('change', () => { offset = 0; load(); });
 $('filter').addEventListener('change', () => { offset = 0; load(); });
+$('style').addEventListener('change', () => { offset = 0; load(); });
 
 function setTrainBadge(kind, text) {
   const b = $('train-badge');

@@ -140,7 +140,8 @@ function initNav(activeTab) {
 /* ---------- background jobs indicator + panel ---------- */
 
 let _jobsTimer = null;
-const KIND_LABEL = { ingest: 'Add folder', scan: 'Score folder', export: 'Export' };
+const KIND_LABEL = { ingest: 'Add folder', scan: 'Score folder', export: 'Export',
+                     classify: 'Style tagging' };
 
 function _shortPath(p) {
   if (!p) return '';
