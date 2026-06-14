@@ -41,10 +41,18 @@
   </div>
 
   <section>
-    <h2>Best-of-N — generate, let your taste model pick</h2>
+    <h2>Generate — try a checkpoint + LoRA, ranked by your taste</h2>
+    <p class="dim" style="margin-bottom:10px">Pick a base model and optionally one of
+      your LoRAs, generate a few seeds, and your taste model ranks them best-first.
+      Each result shows exactly what produced it.</p>
     <div class="row">
       <input id="prompt" placeholder="describe an image to generate…" aria-label="Generation prompt">
-      <select id="n" aria-label="Number of seeds"><option>2</option><option selected>4</option><option>6</option><option>8</option></select>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <label class="dim">model <select id="gen-model" aria-label="Base checkpoint"></select></label>
+      <label class="dim">LoRA <select id="gen-lora" aria-label="LoRA"><option value="">none</option></select></label>
+      <label class="dim">weight <input id="gen-weight" type="number" value="0.6" min="0" max="1.5" step="0.1" style="width:62px" aria-label="LoRA weight"></label>
+      <label class="dim">seeds <select id="n" aria-label="Number of seeds"><option>2</option><option selected>4</option><option>6</option><option>8</option></select></label>
       <button class="btn btn-primary" id="b-gen">Generate</button>
     </div>
     <div id="results"></div>
@@ -105,6 +113,29 @@ function setHealthBadge(kind, text) {
   b.textContent = text;
 }
 
+let _populatedControls = false;
+function populateGenControls(h) {
+  if (_populatedControls) return;
+  const models = h.models || [];
+  const loras = (h.loras && h.loras.data) ? h.loras.data.map(l => l.name)
+              : (Array.isArray(h.loras) ? h.loras : []);
+  if (models.length) {
+    $('gen-model').innerHTML = '';
+    for (const m of models) {
+      const o = document.createElement('option'); o.value = m; o.textContent = m;
+      $('gen-model').appendChild(o);
+    }
+  }
+  // keep the existing "none" option, append the LoRAs (taste ones first)
+  const sorted = loras.slice().sort((a, b) =>
+    (b.includes('taste') - a.includes('taste')) || a.localeCompare(b));
+  for (const name of sorted) {
+    const o = document.createElement('option'); o.value = name; o.textContent = name;
+    $('gen-lora').appendChild(o);
+  }
+  if (models.length || loras.length) _populatedControls = true;
+}
+
 async function health() {
   try {
     const h = await api('/api/studio/health');
@@ -112,6 +143,7 @@ async function health() {
       setHealthBadge('ok', 'Artifex up' +
         (h.vram && h.vram.free_gb != null ? ' · ' + h.vram.free_gb + 'GB free' : ''));
       $('callout-wrap').hidden = true;
+      populateGenControls(h);
     } else {
       setHealthBadge('fail', 'Artifex down');
       $('callout-wrap').hidden = false;
@@ -132,12 +164,21 @@ async function rateResult(imageId, value, label) {
 $('b-gen').addEventListener('click', async () => {
   const prompt = $('prompt').value.trim();
   if (!prompt) return;
+  const model = $('gen-model').value || null;
+  const loraName = $('gen-lora').value;
+  const weight = parseFloat($('gen-weight').value) || 0.6;
+  const loras = loraName ? [{name: loraName, weight}] : null;
+  const using = (model || 'default') + (loraName ? `  +  ${loraName} @ ${weight}` : '  ·  no LoRA');
   $('b-gen').disabled = true;
-  toast('Generating ' + $('n').value + ' seeds…');
+  toast(`Generating ${$('n').value} seeds — ${using}…`);
   try {
-    const r = await api('/api/studio/best_of_n', {prompt, n: +$('n').value});
+    const r = await api('/api/studio/best_of_n', {prompt, n: +$('n').value, model, loras});
     const host = $('results');
     host.textContent = '';
+    const banner = document.createElement('div');
+    banner.className = 'meta'; banner.style.cssText = 'grid-column:1/-1;margin-bottom:4px';
+    banner.textContent = `Generated with ${using}`;
+    host.appendChild(banner);
     for (const it of r.items) {
       const d = document.createElement('div');
       d.className = 'res';
