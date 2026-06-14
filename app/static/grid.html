@@ -235,12 +235,14 @@ $('b-train').addEventListener('click', async () => {
   $('b-train').disabled = true;
   setTrainBadge('busy', 'Training…');
   try {
-    const m = await api('/api/train_taste', {});
-    const acc = m.val_accuracy != null ? Math.round(m.val_accuracy * 100) + '%' : 'n/a';
-    const auc = m.val_auc != null ? Number(m.val_auc).toFixed(2) : 'n/a';
-    setTrainBadge('ok', `${m.model} trained`);
-    toast(`${m.model} trained — val accuracy ${acc}, AUC ${auc} ` +
-          `(${m.val_n} held-out images in ${m.val_clusters} clusters)`);
+    const r = await api('/api/train_taste', {});   // { anime: {...}, realistic: {...} }
+    const parts = [];
+    for (const [style, m] of Object.entries(r)) {
+      if (m.skipped) parts.push(`${style}: skipped`);
+      else parts.push(`${style}: ${Math.round(m.val_accuracy * 100)}% acc, ${Number(m.val_auc).toFixed(2)} AUC`);
+    }
+    setTrainBadge('ok', 'Models trained');
+    toast('Retrained — ' + parts.join('  ·  '));
     offset = 0; load();
   } catch (e) {
     setTrainBadge('fail', 'Training failed');
