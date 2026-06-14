@@ -364,11 +364,16 @@ def train_taste():
 
 
 @app.get("/api/tournament")
-def tournament(size: int = 6, style: str | None = None):
+def tournament(size: int = 6, style: str | None = None, exclude: str | None = None):
     """A screen of liked images of ONE style for best-of-N ranking, least-
     compared first. Ranking across styles is apples-vs-oranges, so a screen is
     always one style. With style omitted, defaults to whichever style has the
-    most liked images."""
+    most liked images. exclude = comma-separated ids to skip (e.g. images
+    already on screen when fetching a replacement)."""
+    try:
+        skip = [int(x) for x in exclude.split(",") if x.strip()] if exclude else []
+    except ValueError:
+        raise HTTPException(422, "exclude must be comma-separated ids")
     with conn() as db:
         if style is None:
             row = db.execute(
@@ -379,8 +384,9 @@ def tournament(size: int = 6, style: str | None = None):
             style = row["style"] if row else "anime"
         if style not in ("anime", "realistic"):
             raise HTTPException(422, "style must be anime or realistic")
+        not_in = f"AND i.id NOT IN ({','.join('?' * len(skip))})" if skip else ""
         rows = db.execute(
-            """SELECT i.id,
+            f"""SELECT i.id,
                       (SELECT count(*) FROM labels pw WHERE pw.kind = 'pairwise'
                        AND (pw.image_id = i.id OR pw.opponent_image_id = i.id)) AS comparisons
                FROM images i
@@ -389,8 +395,9 @@ def tournament(size: int = 6, style: str | None = None):
                WHERE NOT EXISTS (SELECT 1 FROM near_dups d WHERE d.image_id = i.id)
                  AND NOT EXISTS (SELECT 1 FROM current_labels e
                                  WHERE e.image_id = i.id AND e.kind = 'exclude')
+                 {not_in}
                ORDER BY comparisons, random() LIMIT ?""",
-            (style, size),
+            (style, *skip, size),
         ).fetchall()
     return {"style": style, "items": [dict(r) for r in rows]}
 
