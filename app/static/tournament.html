@@ -30,6 +30,10 @@
 </head>
 <body>
   <div id="top">
+    <select id="tour-style" aria-label="Style to rank" title="Rank within one style">
+      <option value="anime">anime</option>
+      <option value="realistic">realistic</option>
+    </select>
     <span id="hint">click the <b>best</b> image (or press its number) — every click ranks it above the other five</span>
     <button class="btn btn-quiet" id="b-skip">skip this set</button>
     <span id="counters">
@@ -52,7 +56,8 @@ const $ = id => document.getElementById(id);
 const delay = ms => new Promise(r => setTimeout(r, ms));
 
 async function load() {
-  const data = await api('/api/tournament?size=' + SIZE);
+  const style = $('tour-style').value;
+  const data = await api(`/api/tournament?size=${SIZE}&style=${style}`);
   items = data.items;
   const b = $('board');
   b.textContent = '';
@@ -60,9 +65,9 @@ async function load() {
     const empty = document.createElement('div');
     empty.className = 'empty-state';
     const h = document.createElement('h2');
-    h.textContent = 'Not enough liked images';
+    h.textContent = `Not enough liked ${style} images`;
     const p = document.createElement('p');
-    p.textContent = 'The tournament ranks the images you already like — it needs at least 2 of them. Rate some images first.';
+    p.textContent = `The tournament ranks ${style} images you already like — it needs at least 2. Rate more ${style} images, or switch style above.`;
     const cta = document.createElement('a');
     cta.className = 'btn btn-primary';
     cta.href = '/';
@@ -112,6 +117,11 @@ async function vote(winnerId, cell) {
 }
 
 $('b-skip').addEventListener('click', () => load());
+$('tour-style').addEventListener('change', () => {
+  localStorage.setItem('tourStyle', $('tour-style').value);
+  votes = 0; $('b-screens').textContent = 'screens: 0';
+  load();
+});
 
 document.addEventListener('keydown', e => {
   if (helpOverlayOpen()) return;
@@ -121,6 +131,8 @@ document.addEventListener('keydown', e => {
 });
 
 (async () => {
+  const saved = localStorage.getItem('tourStyle');
+  if (saved === 'anime' || saved === 'realistic') $('tour-style').value = saved;
   sessionId = (await api('/api/sessions', {name: 'tournament'})).session_id;
   try {
     const rk = await api('/api/rankings?limit=1');

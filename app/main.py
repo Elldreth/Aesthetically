@@ -364,20 +364,35 @@ def train_taste():
 
 
 @app.get("/api/tournament")
-def tournament(size: int = 6):
-    """A screen of liked images for best-of-N ranking; least-compared first."""
+def tournament(size: int = 6, style: str | None = None):
+    """A screen of liked images of ONE style for best-of-N ranking, least-
+    compared first. Ranking across styles is apples-vs-oranges, so a screen is
+    always one style. With style omitted, defaults to whichever style has the
+    most liked images."""
     with conn() as db:
+        if style is None:
+            row = db.execute(
+                "SELECT s.style, count(*) AS n FROM current_labels c"
+                " JOIN image_styles s ON s.image_id = c.image_id"
+                " WHERE c.kind='binary' AND c.value=1.0 GROUP BY s.style"
+                " ORDER BY n DESC LIMIT 1").fetchone()
+            style = row["style"] if row else "anime"
+        if style not in ("anime", "realistic"):
+            raise HTTPException(422, "style must be anime or realistic")
         rows = db.execute(
             """SELECT i.id,
                       (SELECT count(*) FROM labels pw WHERE pw.kind = 'pairwise'
                        AND (pw.image_id = i.id OR pw.opponent_image_id = i.id)) AS comparisons
                FROM images i
                JOIN current_labels c ON c.image_id = i.id AND c.kind = 'binary' AND c.value = 1.0
+               JOIN image_styles st ON st.image_id = i.id AND st.style = ?
                WHERE NOT EXISTS (SELECT 1 FROM near_dups d WHERE d.image_id = i.id)
+                 AND NOT EXISTS (SELECT 1 FROM current_labels e
+                                 WHERE e.image_id = i.id AND e.kind = 'exclude')
                ORDER BY comparisons, random() LIMIT ?""",
-            (size,),
+            (style, size),
         ).fetchall()
-    return {"items": [dict(r) for r in rows]}
+    return {"style": style, "items": [dict(r) for r in rows]}
 
 
 class TournamentIn(BaseModel):
