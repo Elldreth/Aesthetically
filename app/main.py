@@ -485,12 +485,24 @@ def studio_best_of_n(body: BestOfNIn):
         raise _studio_guard(e)
 
 
+@app.get("/api/studio/presets")
+def studio_presets():
+    """Training presets + clamp, so the UI shows the exact steps/lr/rank math."""
+    from . import studio
+
+    return {"presets": studio.LORA_PRESETS, "default": studio.DEFAULT_PRESET,
+            "default_max_images": studio.DEFAULT_MAX_IMAGES,
+            "steps_min": studio.STEPS_MIN, "steps_max": studio.STEPS_MAX}
+
+
 class TrainLoraIn(BaseModel):
     name: str = Field(min_length=1, max_length=80)
-    k: int = Field(default=40, ge=10, le=200)
-    steps: int = Field(default=1200, ge=50, le=4000)
-    rank: int = Field(default=16, ge=4, le=64)
-    lr: float = Field(default=1e-4, gt=0, le=1e-2)
+    max_images: int = Field(default=60, ge=10, le=200)
+    preset: str = Field(default="balanced", pattern="^(subtle|balanced|strong)$")
+    model: str | None = None
+    steps: int | None = Field(default=None, ge=200, le=6000)  # optional override
+    lr: float | None = Field(default=None, gt=0, le=1e-2)
+    rank: int | None = Field(default=None, ge=4, le=128)
 
 
 @app.post("/api/studio/train_lora")
@@ -498,7 +510,9 @@ def studio_train_lora(body: TrainLoraIn):
     from . import studio
 
     try:
-        return studio.train_taste_lora(body.name, body.k, body.steps, body.rank, body.lr)
+        return studio.train_taste_lora(body.name, max_images=body.max_images,
+                                       preset=body.preset, model=body.model,
+                                       steps=body.steps, lr=body.lr, rank=body.rank)
     except Exception as e:
         raise _studio_guard(e)
 
@@ -558,11 +572,13 @@ def studio_clusters(min_cluster_size: int = 10):
 
 class TrainClusterIn(BaseModel):
     name: str = Field(min_length=1, max_length=80)
-    image_ids: list[int] = Field(min_length=10, max_length=400)
-    steps: int = Field(default=1200, ge=50, le=4000)
-    rank: int = Field(default=16, ge=4, le=64)
+    image_ids: list[int] = Field(min_length=10, max_length=2000)
+    preset: str = Field(default="balanced", pattern="^(subtle|balanced|strong)$")
     model: str | None = None
     max_images: int = Field(default=60, ge=10, le=200)
+    steps: int | None = Field(default=None, ge=200, le=6000)
+    lr: float | None = Field(default=None, gt=0, le=1e-2)
+    rank: int | None = Field(default=None, ge=4, le=128)
 
 
 @app.post("/api/studio/train_cluster_lora")
@@ -570,9 +586,9 @@ def studio_train_cluster_lora(body: TrainClusterIn):
     from . import studio
 
     try:
-        return studio.submit_lora(body.name, body.image_ids, steps=body.steps,
-                                  rank=body.rank, model=body.model,
-                                  max_images=body.max_images)
+        return studio.submit_lora(body.name, body.image_ids, preset=body.preset,
+                                  model=body.model, max_images=body.max_images,
+                                  steps=body.steps, lr=body.lr, rank=body.rank)
     except Exception as e:
         raise _studio_guard(e)
 

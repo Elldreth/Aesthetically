@@ -26,6 +26,37 @@ GEN_DIR = DATA_DIR / "generated"
 # base (0.8 fought composition and only broke even).
 DEFAULT_LORA_WEIGHT = 0.6
 
+# LoRA training presets — values from a 2026 research pass over kohya/Civitai/HF
+# diffusers guidance (see commit message). Total steps are DERIVED:
+# steps = clamp(images * steps_per_image, STEPS_MIN, STEPS_MAX). STYLE LoRAs
+# overfit faster than character LoRAs, so steps/image runs well below the usual
+# ~100. alpha = rank/2 (the dominant style convention) and LRs are tuned for it.
+LORA_PRESETS = {
+    "subtle":   {"steps_per_image": 40,  "lr": 8e-5,  "rank": 16,
+                 "use": "light flavor; keeps the base model dominant, low overfit risk"},
+    "balanced": {"steps_per_image": 75,  "lr": 1e-4,  "rank": 32,
+                 "use": "recommended default for most aesthetic styles"},
+    "strong":   {"steps_per_image": 110, "lr": 1.2e-4, "rank": 64,
+                 "use": "dense/complex styles needing more capacity (realism > anime)"},
+}
+DEFAULT_PRESET = "balanced"
+DEFAULT_MAX_IMAGES = 60
+STEPS_MIN, STEPS_MAX = 600, 3000   # <600 underfits; >3000 SDXL style LoRAs overfit
+
+
+def _resolve_training(preset: str, n_images: int, steps: int | None,
+                      lr: float | None, rank: int | None) -> dict:
+    """Turn a preset + actual image count into concrete (steps, lr, rank, alpha),
+    with explicit overrides winning. Steps derive from the image count."""
+    p = LORA_PRESETS.get(preset or DEFAULT_PRESET, LORA_PRESETS[DEFAULT_PRESET])
+    resolved_steps = steps if steps else max(STEPS_MIN, min(STEPS_MAX,
+                                             n_images * p["steps_per_image"]))
+    resolved_rank = rank or p["rank"]
+    return {"preset": preset or DEFAULT_PRESET, "steps": resolved_steps,
+            "lr": lr if lr is not None else p["lr"],
+            "rank": resolved_rank, "alpha": max(1, resolved_rank // 2),
+            "steps_per_image": p["steps_per_image"]}
+
 _shared_client: ArtifexClient | None = None
 
 
@@ -157,12 +188,14 @@ def _image_paths(db, image_ids: list[int]) -> list[tuple[int, str]]:
     return out
 
 
-def submit_lora(name: str, image_ids: list[int], *, steps: int = 1200, rank: int = 16,
-                lr: float = 1e-4, max_images: int = 60, model: str | None = None,
-                client: ArtifexClient | None = None) -> dict:
+def submit_lora(name: str, image_ids: list[int], *, preset: str = DEFAULT_PRESET,
+                max_images: int = DEFAULT_MAX_IMAGES, model: str | None = None,
+                steps: int | None = None, lr: float | None = None,
+                rank: int | None = None, client: ArtifexClient | None = None) -> dict:
     """Submit a style-LoRA job to Artifex from an explicit image-id list.
-    Caps to max_images by greedy diversity selection so the set stays varied.
-    model = the base checkpoint to train against (Artifex /v1/train 'model')."""
+    Caps to max_images by greedy diversity selection, then DERIVES total steps
+    from the actual image count via the chosen preset (overridable). Returns the
+    real settings used so the UI never has to guess."""
     from pathlib import Path
 
     client = _get_client(client)
@@ -179,14 +212,16 @@ def submit_lora(name: str, image_ids: list[int], *, steps: int = 1200, rank: int
             ids = [i for i in ids if i in keep]
             _, mat = load_vectors(db, MODEL_NAME, image_ids=ids)
 
+    t = _resolve_training(preset, len(ids), steps, lr, rank)
+
     images = []
     for image_id in ids:
         raw = Path(path_by_id[image_id]).read_bytes()
         images.append("data:image/png;base64," + base64.b64encode(raw).decode())
 
     config = {
-        "name": name, "steps": steps, "rank": rank, "alpha": rank, "lr": lr,
-        "auto_caption": True, "prune_tags": True, "sampling": "balance",
+        "name": name, "steps": t["steps"], "rank": t["rank"], "alpha": t["alpha"],
+        "lr": t["lr"], "auto_caption": True, "prune_tags": True, "sampling": "balance",
         # style recipe: content-diverse, captions describe content so style binds
     }
     if model:
@@ -196,7 +231,8 @@ def submit_lora(name: str, image_ids: list[int], *, steps: int = 1200, rank: int
     with conn() as db:
         sims = mat @ mat.T
         fingerprint = {
-            "n": len(ids), "image_ids": ids,
+            "n": len(ids), "image_ids": ids, "preset": t["preset"],
+            "steps": t["steps"], "lr": t["lr"], "rank": t["rank"],
             "mean_pairwise_sim": round(float(sims[np.triu_indices(len(ids), 1)].mean()), 4)
             if len(ids) > 1 else None,
         }
@@ -208,18 +244,22 @@ def submit_lora(name: str, image_ids: list[int], *, steps: int = 1200, rank: int
              json.dumps(fingerprint)),
         )
         run_id = cur.lastrowid
-    return {"run_id": run_id, "job_id": job.get("job_id"),
-            "dataset_size": len(ids), "state": job.get("state")}
+    return {"run_id": run_id, "job_id": job.get("job_id"), "dataset_size": len(ids),
+            "steps": t["steps"], "lr": t["lr"], "rank": t["rank"], "preset": t["preset"],
+            "state": job.get("state")}
 
 
-def train_taste_lora(name: str, k: int = 40, steps: int = 1200, rank: int = 16,
-                     lr: float = 1e-4, client: ArtifexClient | None = None) -> dict:
+def train_taste_lora(name: str, max_images: int = DEFAULT_MAX_IMAGES,
+                     preset: str = DEFAULT_PRESET, model: str | None = None,
+                     steps: int | None = None, lr: float | None = None,
+                     rank: int | None = None, client: ArtifexClient | None = None) -> dict:
     """Submit a style-LoRA job from the globally-curated taste dataset."""
-    dataset = build_taste_dataset(k)
+    dataset = build_taste_dataset(max_images)
     if len(dataset) < 10:
         raise RuntimeError(f"only {len(dataset)} usable liked images — rate more first")
-    return submit_lora(name, [c["id"] for c in dataset], steps=steps, rank=rank,
-                       lr=lr, max_images=k, client=client)
+    return submit_lora(name, [c["id"] for c in dataset], preset=preset,
+                       max_images=max_images, model=model, steps=steps, lr=lr,
+                       rank=rank, client=client)
 
 
 def poll_run(run_id: int, client: ArtifexClient | None = None) -> dict:

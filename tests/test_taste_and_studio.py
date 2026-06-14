@@ -102,9 +102,12 @@ def test_train_taste_lora_with_fake_client(tmp_db, tmp_path):
     db.close()
 
     fake = FakeArtifex()
-    out = studio.train_taste_lora("test-lora", k=12, steps=100, client=fake)
+    out = studio.train_taste_lora("test-lora", max_images=12, preset="subtle", client=fake)
     assert out["dataset_size"] == 12
     assert fake.train_calls[0]["n_images"] == 12
+    # steps derive from image count: 12 * 40/img = 480, clamped up to the 600 floor
+    assert out["steps"] == 600
+    assert fake.train_calls[0]["steps"] == 600
     db = get_conn()
     run = db.execute("SELECT * FROM training_runs WHERE id = ?", (out["run_id"],)).fetchone()
     assert run["status"] == "running"
@@ -126,7 +129,7 @@ def test_train_taste_lora_requires_enough_likes(tmp_db):
     from app import studio
 
     try:
-        studio.train_taste_lora("x", k=10, client=FakeArtifex())
+        studio.train_taste_lora("x", max_images=10, client=FakeArtifex())
         raise AssertionError("expected RuntimeError")
     except RuntimeError as e:
         assert "rate more" in str(e)
