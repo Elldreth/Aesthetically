@@ -69,6 +69,16 @@
       <span class="badge" id="train-status" hidden></span>
     </div>
     <p class="dim" id="train-readout" style="margin:6px 0 0">…</p>
+    <details id="lora-advanced" style="margin:6px 0 0">
+      <summary class="dim" style="cursor:pointer">Advanced — override the preset</summary>
+      <div class="row" style="margin-top:6px">
+        <label class="dim">steps <input id="lora-steps" type="number" min="200" max="6000" step="50" placeholder="auto" aria-label="Override total steps"></label>
+        <label class="dim">learning rate <input id="lora-lr" type="number" min="0.00001" max="0.001" step="0.00001" placeholder="preset" aria-label="Override learning rate"></label>
+        <label class="dim">rank <input id="lora-rank" type="number" min="4" max="128" step="4" placeholder="preset" aria-label="Override rank"></label>
+        <button class="btn" id="b-reset-adv" type="button" title="Clear overrides and use the preset">Reset</button>
+      </div>
+      <p class="dim" style="margin:6px 0 0;font-size:12px">Leave a field blank to use the preset. An explicit step count is used as-is (not clamped). Alpha = rank ÷ 2.</p>
+    </details>
     <table id="runs">
       <thead><tr><th>run</th><th>name</th><th>status</th><th>dataset</th><th>artifact</th></tr></thead>
       <tbody></tbody>
@@ -282,9 +292,13 @@ $('b-train').addEventListener('click', async () => {
   $('b-train').disabled = true;
   setTrainStatus('busy', 'curating dataset…');
   try {
+    const ov = loraOverrides();
     const r = await api('/api/studio/train_lora', {
       name: $('lora-name').value.trim(), max_images: +$('lora-k').value,
-      preset: $('lora-preset').value});
+      preset: $('lora-preset').value,
+      ...(ov.steps ? {steps: Math.round(ov.steps)} : {}),
+      ...(ov.lr != null ? {lr: ov.lr} : {}),
+      ...(ov.rank ? {rank: Math.round(ov.rank)} : {})});
     toast(`Run #${r.run_id}: ${r.dataset_size} images × ${r.preset} → ` +
           `${r.steps} steps, lr ${r.lr}, rank ${r.rank}. Training…`);
     pollRun(r.run_id);
@@ -408,17 +422,34 @@ function clusterCard(c, i) {
 }
 
 let PRESETS = null;
+// Read the three advanced override fields; blank/invalid → null (use preset).
+function loraOverrides() {
+  const num = id => { const v = parseFloat($(id).value); return isFinite(v) && v > 0 ? v : null; };
+  return {steps: num('lora-steps'), lr: num('lora-lr'), rank: num('lora-rank')};
+}
 function updateReadout() {
   if (!PRESETS) return;
   const p = PRESETS.presets[$('lora-preset').value];
   const imgs = +$('lora-k').value || 0;
+  const ov = loraOverrides();
+  // Mirror backend _resolve_training: explicit steps used as-is; else derived+clamped.
   const raw = imgs * p.steps_per_image;
-  const steps = Math.max(PRESETS.steps_min, Math.min(PRESETS.steps_max, raw));
-  const alpha = Math.max(1, Math.floor(p.rank / 2));
-  const clamp = raw !== steps ? ` (clamped from ${raw.toLocaleString()})` : '';
+  const derived = Math.max(PRESETS.steps_min, Math.min(PRESETS.steps_max, raw));
+  const steps = ov.steps || derived;
+  const lr = ov.lr != null ? ov.lr : p.lr;
+  const rank = ov.rank || p.rank;
+  const alpha = Math.max(1, Math.floor(rank / 2));
+  // Refresh placeholders so a blank field advertises the preset's value.
+  $('lora-lr').placeholder = String(p.lr);
+  $('lora-rank').placeholder = String(p.rank);
+  $('lora-steps').placeholder = `auto ≈ ${derived.toLocaleString()}`;
+  const stepNote = ov.steps ? ` (override)`
+    : (raw !== derived ? ` (clamped from ${raw.toLocaleString()})` : '');
+  const tail = (ov.steps || ov.lr != null || ov.rank)
+    ? '  —  custom override' : `  —  ${p.use}`;
   $('train-readout').textContent =
-    `up to ${imgs} images × ${p.steps_per_image}/img → ${steps.toLocaleString()} steps${clamp}` +
-    `  ·  lr ${p.lr}  ·  rank ${p.rank} / alpha ${alpha}  —  ${p.use}`;
+    `up to ${imgs} images × ${p.steps_per_image}/img → ${steps.toLocaleString()} steps${stepNote}` +
+    `  ·  lr ${lr}  ·  rank ${rank} / alpha ${alpha}${tail}`;
 }
 
 async function loadPresets() {
@@ -432,7 +463,12 @@ async function loadPresets() {
     sel.appendChild(o);
   }
   $('lora-k').value = PRESETS.default_max_images;
-  ['lora-preset', 'lora-k'].forEach(id => $(id).addEventListener('input', updateReadout));
+  ['lora-preset', 'lora-k', 'lora-steps', 'lora-lr', 'lora-rank']
+    .forEach(id => $(id).addEventListener('input', updateReadout));
+  $('b-reset-adv').addEventListener('click', () => {
+    ['lora-steps', 'lora-lr', 'lora-rank'].forEach(id => $(id).value = '');
+    updateReadout();
+  });
   updateReadout();
 }
 
