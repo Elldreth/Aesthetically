@@ -752,8 +752,9 @@ def scan_results(scan_id: int | None = None, limit: int = 60, offset: int = 0):
 
 
 @app.get("/scan/img/{scan_id}/{rank}")
-def scan_image(scan_id: int, rank: int):
-    """Thumbnail of the rank-th image (score desc) in a persisted scan."""
+def scan_image(scan_id: int, rank: int, full: bool = False):
+    """The rank-th image (score desc) in a persisted scan — a 320px thumbnail
+    by default, or the full-resolution original with ?full=1 (for the lightbox)."""
     with conn() as db:
         row = db.execute(
             "SELECT path FROM scan_items WHERE scan_id = ?"
@@ -762,6 +763,8 @@ def scan_image(scan_id: int, rank: int):
         ).fetchone()
     if row is None or not os.path.isfile(row["path"]):
         raise HTTPException(404)
+    if full:
+        return FileResponse(row["path"])
     try:
         return FileResponse(_thumb_for(row["path"]), media_type="image/webp")
     except DECODE_ERRORS:

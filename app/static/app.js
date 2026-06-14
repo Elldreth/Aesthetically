@@ -11,6 +11,7 @@ const ICONS = {
   undo: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>',
   chevronLeft: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>',
   chevronRight: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>',
+  expand: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/></svg>',
 };
 
 /* ---------- api ---------- */
@@ -311,6 +312,57 @@ function helpOverlay(shortcuts) {
 /* helpOverlayOpen() — pages can check it to suppress their own key handlers
    while the dialog is up. */
 function helpOverlayOpen() { return !!_helpEl; }
+
+/* ---------- lightbox ---------- */
+
+/* lightbox(entries, start) — full-size image viewer. entries: [{url, label}].
+   Arrow keys / on-screen arrows navigate; Escape or backdrop click closes. */
+let _lightboxOpen = false;
+function lightbox(entries, start = 0) {
+  if (!entries.length || _lightboxOpen) return;
+  _lightboxOpen = true;
+  let i = Math.max(0, Math.min(entries.length - 1, start));
+
+  const bk = document.createElement('div');
+  bk.className = 'overlay-backdrop lightbox';
+  const fig = document.createElement('figure');
+  fig.className = 'lightbox-fig';
+  const img = document.createElement('img');
+  const cap = document.createElement('figcaption');
+  fig.append(img, cap);
+  const prev = document.createElement('button');
+  prev.className = 'lb-nav lb-prev'; prev.innerHTML = '‹'; prev.setAttribute('aria-label', 'Previous');
+  const next = document.createElement('button');
+  next.className = 'lb-nav lb-next'; next.innerHTML = '›'; next.setAttribute('aria-label', 'Next');
+  const close = document.createElement('button');
+  close.className = 'lb-close'; close.innerHTML = '✕'; close.setAttribute('aria-label', 'Close');
+  bk.append(prev, fig, next, close);
+
+  function show() {
+    const e = entries[i];
+    img.src = e.url; img.alt = e.label || '';
+    cap.textContent = (entries.length > 1 ? `${i + 1} / ${entries.length}` : '') +
+      (e.label ? `   ${e.label}` : '');
+    prev.style.visibility = i > 0 ? 'visible' : 'hidden';
+    next.style.visibility = i < entries.length - 1 ? 'visible' : 'hidden';
+  }
+  function go(d) { const j = i + d; if (j >= 0 && j < entries.length) { i = j; show(); } }
+  function done() { bk.remove(); document.removeEventListener('keydown', key, true); _lightboxOpen = false; }
+  function key(e) {
+    if (e.key === 'Escape') { e.stopPropagation(); done(); }
+    else if (e.key === 'ArrowLeft') { e.stopPropagation(); go(-1); }
+    else if (e.key === 'ArrowRight') { e.stopPropagation(); go(1); }
+  }
+  prev.onclick = e => { e.stopPropagation(); go(-1); };
+  next.onclick = e => { e.stopPropagation(); go(1); };
+  close.onclick = done;
+  bk.addEventListener('click', e => { if (e.target === bk) done(); });
+  document.addEventListener('keydown', key, true);   // capture: beats page hotkeys
+  document.body.appendChild(bk);
+  show();
+}
+
+function lightboxOpen() { return _lightboxOpen; }
 
 /* ---------- add-folder dialog ---------- */
 

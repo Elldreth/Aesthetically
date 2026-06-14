@@ -124,6 +124,19 @@ async function load() {
       s.textContent = it.score.toFixed(2);
       c.appendChild(s);
     }
+    const zoom = document.createElement('button');
+    zoom.className = 'cell-zoom';
+    zoom.title = 'Enlarge'; zoom.setAttribute('aria-label', 'Enlarge image');
+    zoom.innerHTML = ICONS.expand;
+    zoom.addEventListener('click', (e) => {
+      e.stopPropagation();                                 // don't toggle selection
+      const entries = items.map(x => ({
+        url: '/img/' + x.id,
+        label: 'image ' + x.id + (x.score != null ? ' · score ' + x.score.toFixed(2) : ''),
+      }));
+      lightbox(entries, items.indexOf(it));
+    });
+    c.appendChild(zoom);
     c.addEventListener('click', () => {
       const id = it.id;
       selected.has(id) ? selected.delete(id) : selected.add(id);
@@ -213,7 +226,7 @@ $('b-train').addEventListener('click', async () => {
 });
 
 document.addEventListener('keydown', e => {
-  if (helpOverlayOpen()) return;
+  if (helpOverlayOpen() || lightboxOpen()) return;
   if (e.key === 'a') bulk(0);          // bulk() no-ops when nothing is selected
   else if (e.key === 'w') bulk(0.5);
   else if (e.key === 'd') bulk(1);
