@@ -179,12 +179,19 @@ $('b-gen').addEventListener('click', async () => {
     banner.className = 'meta'; banner.style.cssText = 'grid-column:1/-1;margin-bottom:4px';
     banner.textContent = `Generated with ${using}`;
     host.appendChild(banner);
-    for (const it of r.items) {
+    const entries = r.items.map(it => ({
+      url: '/img/' + it.image_id,
+      label: it.score != null ? 'score ' + it.score.toFixed(2) : '',
+    }));
+    r.items.forEach((it, idx) => {
       const d = document.createElement('div');
       d.className = 'res';
       const img = document.createElement('img');
       img.src = '/img/' + it.image_id;
       img.alt = 'image ' + it.image_id;
+      img.style.cursor = 'zoom-in';
+      img.title = 'Click to enlarge';
+      img.addEventListener('click', () => lightbox(entries, idx));
       d.appendChild(img);
       if (it.score != null) {
         const s = document.createElement('span');
@@ -208,7 +215,7 @@ $('b-gen').addEventListener('click', async () => {
       acts.append(down, up);
       d.appendChild(acts);
       host.appendChild(d);
-    }
+    });
     toast('Done — ranked best first; your ratings refine the next round');
   } catch (e) { toast('Generation failed: ' + e.message); }
   $('b-gen').disabled = false;
