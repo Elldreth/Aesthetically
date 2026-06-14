@@ -77,6 +77,7 @@
     <div class="group" title="Remove junk (depth maps, etc.) from the queue and training">
       <button class="btn" id="b-remove" disabled>Remove</button>
       <button class="btn" id="b-restore" disabled>Restore</button>
+      <button class="btn" id="b-dedupe" title="Find near-identical images and remove all but one of each (reversible)">Remove duplicates</button>
     </div>
     <div class="sep" role="presentation"></div>
     <div class="group">
@@ -229,6 +230,36 @@ async function restore() {
   load();
 }
 
+async function dedupe() {
+  const btn = $('b-dedupe'), orig = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Scanning…';
+  try {
+    const { job_id } = await api('/api/dedupe', {});
+    let job;
+    do {
+      await new Promise(r => setTimeout(r, 1200));
+      job = await api(`/api/jobs/${job_id}`);
+      if (job.phase) btn.textContent = job.phase + '…';
+    } while (!['done', 'failed', 'cancelled'].includes(job.state));
+    if (job.state !== 'done') {
+      toast('Dedupe ' + job.state + (job.error ? ': ' + job.error : '')); return;
+    }
+    const r = job.result || {}, ids = r.removed_ids || [];
+    if (!r.removed) { toast('No duplicates found'); return; }
+    toast(`Removed ${r.removed} duplicate${r.removed === 1 ? '' : 's'} across ` +
+          `${r.groups} group${r.groups === 1 ? '' : 's'} — kept one of each`,
+      {action: {label: 'Undo', onClick: async () => {
+        try { await api('/api/exclude/restore', {image_ids: ids}); load(); }
+        catch (e) { toast('Undo failed: ' + e.message); }
+      }}});
+    load();
+  } catch (e) {
+    toast('Dedupe failed: ' + e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = orig;
+  }
+}
+
 function nextPage() { if (offset + LIMIT < total) { offset += LIMIT; load(); } }
 function prevPage() { if (offset > 0) { offset = Math.max(0, offset - LIMIT); load(); } }
 
@@ -249,6 +280,7 @@ $('b-anime').addEventListener('click', () => setStyle('anime'));
 $('b-realistic').addEventListener('click', () => setStyle('realistic'));
 $('b-remove').addEventListener('click', remove);
 $('b-restore').addEventListener('click', restore);
+$('b-dedupe').addEventListener('click', dedupe);
 $('b-next').addEventListener('click', nextPage);
 $('b-prev').addEventListener('click', prevPage);
 $('mode').addEventListener('change', () => { offset = 0; load(); });

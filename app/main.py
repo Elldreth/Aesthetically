@@ -687,9 +687,36 @@ def jobs_list():
     return {"items": jobs.list_jobs(), "active": jobs.active_count()}
 
 
+@app.get("/api/jobs/{job_id}")
+def jobs_get(job_id: int):
+    """One job's status + result, for clients polling a specific submission."""
+    job = jobs.get(job_id)
+    if job is None:
+        raise HTTPException(404, "no such job")
+    return job.as_dict()
+
+
 @app.post("/api/jobs/{job_id}/cancel")
 def jobs_cancel(job_id: int):
     return {"cancelled": jobs.cancel(job_id)}
+
+
+class DedupeIn(BaseModel):
+    # 0 = identical perceptual hash (true duplicates); higher = fuzzier.
+    phash_dist: int = Field(default=0, ge=0, le=8)
+
+
+@app.post("/api/dedupe")
+def dedupe_remove(body: DedupeIn):
+    """Find near-identical images and remove all but one per group (reversible
+    exclude; nothing deleted from disk). Runs as a background job."""
+    from . import dedupe
+
+    job = jobs.submit(
+        "dedupe", "removing duplicates",
+        lambda progress, cancel: dedupe.remove_duplicates(progress, cancel, body.phash_dist),
+    )
+    return {"started": True, "job_id": job.id}
 
 
 class IngestFolderIn(BaseModel):

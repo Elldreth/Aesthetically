@@ -138,6 +138,61 @@ def find_groups(db, phash_dist: int, cos_threshold: float | None) -> None:
     print(f"groups: {len(groups)}, non-canonical members hidden from queue: {n_members}")
 
 
+class _NeverCancel:
+    @staticmethod
+    def is_set() -> bool:
+        return False
+
+
+def remove_duplicates(progress: dict | None = None, cancel=None,
+                      phash_dist: int = 0) -> dict:
+    """Find near-identical images and remove all but one per group.
+
+    Reuses the reversible 'exclude' mechanism (the grid's Remove button) — the
+    non-canonical members of each near-duplicate group get an 'exclude' label so
+    they drop out of the queue, grid, and training. NOTHING is deleted from disk
+    and it is undoable via /api/exclude/restore.
+
+    ``phash_dist`` is the perceptual-hash Hamming threshold: 0 = identical hash
+    (true duplicates / re-saves), higher = fuzzier. Default 0 because subtle SD
+    seed variants must stay individually ratable (see module docstring).
+
+    Returns ``{removed, groups, removed_ids}`` so the caller can offer an undo.
+    """
+    cancel = cancel or _NeverCancel()
+    db = get_conn()
+    try:
+        if progress is not None:
+            progress["phase"] = "hashing"
+        fill_phashes(db, progress, cancel)
+        if cancel.is_set():
+            return {"removed": 0, "groups": 0, "removed_ids": []}
+        if progress is not None:
+            progress["phase"] = "grouping"
+        find_groups(db, phash_dist, None)
+        # Non-canonical members not already removed.
+        ids = [r["image_id"] for r in db.execute(
+            "SELECT d.image_id FROM near_dups d"
+            " WHERE NOT EXISTS (SELECT 1 FROM current_labels c"
+            "   WHERE c.image_id = d.image_id AND c.kind = 'exclude' AND c.value = 1)"
+            " ORDER BY d.image_id"
+        ).fetchall()]
+        groups = db.execute(
+            "SELECT COUNT(DISTINCT canonical_id) AS g FROM near_dups"
+        ).fetchone()["g"]
+        if progress is not None:
+            progress.update(phase="removing", total=len(ids), done=0)
+        db.executemany(
+            "INSERT INTO labels (image_id, kind, value, source)"
+            " VALUES (?, 'exclude', 1, 'dedupe')",
+            [(i,) for i in ids],
+        )
+        db.commit()
+        return {"removed": len(ids), "groups": groups, "removed_ids": ids}
+    finally:
+        db.close()
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     # default 0: on SD seed-cluster data even hamming 2 conflates aesthetic
