@@ -78,6 +78,7 @@
       <button class="btn" id="b-remove" disabled>Remove</button>
       <button class="btn" id="b-restore" disabled>Restore</button>
       <button class="btn" id="b-dedupe" title="Find near-identical images and remove all but one of each (reversible)">Remove duplicates</button>
+      <span class="badge" id="dedupe-badge" hidden></span>
     </div>
     <div class="sep" role="presentation"></div>
     <div class="group">
@@ -230,30 +231,54 @@ async function restore() {
   load();
 }
 
+function setDedupeBadge(kind, text) {
+  const b = $('dedupe-badge');
+  b.className = 'badge' + (kind ? ' ' + kind : '');
+  b.textContent = text;
+  b.hidden = !text;
+}
+
 async function dedupe() {
   const btn = $('b-dedupe'), orig = btn.textContent;
+  const plural = n => n === 1 ? '' : 's';
   btn.disabled = true; btn.textContent = 'Scanning…';
+  setDedupeBadge('busy', 'Scanning…');   // immediate feedback, persists until result
   try {
     const { job_id } = await api('/api/dedupe', {});
     let job;
-    do {
-      await new Promise(r => setTimeout(r, 1200));
+    while (true) {                        // poll right away so fast runs still register
       job = await api(`/api/jobs/${job_id}`);
-      if (job.phase) btn.textContent = job.phase + '…';
-    } while (!['done', 'failed', 'cancelled'].includes(job.state));
+      if (['done', 'failed', 'cancelled'].includes(job.state)) break;
+      if (job.phase) {
+        const prog = job.total ? ` ${job.done}/${job.total}` : '';
+        setDedupeBadge('busy', job.phase + prog + '…');
+      }
+      await new Promise(r => setTimeout(r, 600));
+    }
     if (job.state !== 'done') {
-      toast('Dedupe ' + job.state + (job.error ? ': ' + job.error : '')); return;
+      setDedupeBadge('fail', 'Dedupe ' + job.state);
+      toast('Dedupe ' + job.state + (job.error ? ': ' + job.error : ''));
+      return;
     }
     const r = job.result || {}, ids = r.removed_ids || [];
-    if (!r.removed) { toast('No duplicates found'); return; }
-    toast(`Removed ${r.removed} duplicate${r.removed === 1 ? '' : 's'} across ` +
-          `${r.groups} group${r.groups === 1 ? '' : 's'} — kept one of each`,
-      {action: {label: 'Undo', onClick: async () => {
-        try { await api('/api/exclude/restore', {image_ids: ids}); load(); }
-        catch (e) { toast('Undo failed: ' + e.message); }
-      }}});
-    load();
+    if (r.removed) {
+      setDedupeBadge('ok', `Removed ${r.removed} (${r.groups} group${plural(r.groups)})`);
+      toast(`Removed ${r.removed} duplicate${plural(r.removed)} across ` +
+            `${r.groups} group${plural(r.groups)} — kept one of each`,
+        {action: {label: 'Undo', onClick: async () => {
+          try { await api('/api/exclude/restore', {image_ids: ids}); setDedupeBadge('', ''); load(); }
+          catch (e) { toast('Undo failed: ' + e.message); }
+        }}});
+      load();
+    } else if (r.groups) {               // groups exist but were already removed earlier
+      setDedupeBadge('ok', `No new dupes · ${r.groups} group${plural(r.groups)} already removed`);
+      toast(`No new duplicates — ${r.groups} group${plural(r.groups)} already de-duplicated`);
+    } else {
+      setDedupeBadge('', 'No duplicates found');
+      toast('No duplicates found');
+    }
   } catch (e) {
+    setDedupeBadge('fail', 'Failed');
     toast('Dedupe failed: ' + e.message);
   } finally {
     btn.disabled = false; btn.textContent = orig;
