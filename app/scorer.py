@@ -18,12 +18,17 @@ from .taste import MODELS_DIR
 _lock = threading.Lock()
 
 
-def latest_head() -> dict | None:
-    versions = sorted(MODELS_DIR.glob("taste_v*.json"),
-                      key=lambda p: int(p.stem.split("_v")[1]))
-    if not versions:
+def latest_head(style: str | None = None) -> dict | None:
+    """Latest taste head — for a given style, or (style=None) the most recently
+    trained head of any kind (used by studio when no style is specified)."""
+    if style:
+        cands = list(MODELS_DIR.glob(f"taste_{style}_v*.json"))
+    else:
+        cands = list(MODELS_DIR.glob("taste_v*.json")) + list(MODELS_DIR.glob("taste_*_v*.json"))
+    if not cands:
         return None
-    return json.loads(versions[-1].read_text(encoding="utf-8"))
+    latest = max(cands, key=lambda p: p.stat().st_mtime)
+    return json.loads(latest.read_text(encoding="utf-8"))
 
 
 def score_images(pils: list[Image.Image], head: dict | None = None,

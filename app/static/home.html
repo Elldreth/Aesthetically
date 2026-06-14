@@ -99,21 +99,25 @@ async function load() {
   $('l-excl').textContent = c.excluded.toLocaleString();
 
   const mb = $('model-body');
-  if (!d.model) {
-    mb.innerHTML = '<div class="muted">No model yet — rate images, then train.</div>';
+  const models = d.models || {};
+  mb.textContent = '';
+  if (!Object.keys(models).length) {
+    mb.innerHTML = '<div class="muted">No models yet — rate images, then train.</div>';
   } else {
-    const m = d.model;
-    const acc = m.val_accuracy != null ? Math.round(m.val_accuracy * 100) + '%' : '—';
-    const auc = m.val_auc != null ? m.val_auc.toFixed(3) : '—';
-    mb.textContent = '';
-    const rows = [['Version', m.name || '—'], ['Val accuracy', acc], ['Val AUC', auc],
-                  ['New ratings since', (m.labels_since ?? 0).toLocaleString()]];
-    for (const [k, v] of rows) {
-      const line = document.createElement('div');
-      line.className = 'stat-line' + (k === 'Version' ? '' : ' dim');
-      const a = document.createElement('span'); a.textContent = k;
-      const b = document.createElement('span'); b.className = 'v'; b.textContent = v;
-      line.append(a, b); mb.appendChild(line);
+    for (const style of ['anime', 'realistic']) {
+      const m = models[style];
+      const head = document.createElement('div');
+      head.className = 'stat-line';
+      const a = document.createElement('span'); a.textContent = style;
+      const b = document.createElement('span'); b.className = 'v';
+      if (!m) {
+        b.textContent = 'not trained'; b.style.color = 'var(--text-dim)';
+      } else {
+        const acc = m.val_accuracy != null ? Math.round(m.val_accuracy * 100) + '%' : '—';
+        const auc = m.val_auc != null ? m.val_auc.toFixed(3) : '—';
+        b.textContent = `${acc} acc · ${auc} AUC` + (m.labels_since ? ` · +${m.labels_since}` : '');
+      }
+      head.append(a, b); mb.appendChild(head);
     }
   }
 
@@ -136,8 +140,13 @@ async function retrain() {
   $('b-train').disabled = true;
   $('b-train').textContent = 'Training…';
   try {
-    const m = await api('/api/train_taste', {});
-    toast(`${m.model} trained — val accuracy ${Math.round(m.val_accuracy * 100)}%, AUC ${m.val_auc}`);
+    const r = await api('/api/train_taste', {});
+    const parts = [];
+    for (const [style, m] of Object.entries(r)) {
+      if (m.skipped) parts.push(`${style}: skipped`);
+      else parts.push(`${style}: ${Math.round(m.val_accuracy * 100)}% acc, ${m.val_auc} AUC`);
+    }
+    toast('Trained — ' + parts.join('  ·  '));
     load();
   } catch (e) { toast('Train failed: ' + e.message); }
   $('b-train').disabled = false;

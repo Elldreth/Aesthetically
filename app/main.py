@@ -320,15 +320,14 @@ def bulk_label(body: BulkLabelIn):
 
 @app.post("/api/train_taste")
 def train_taste():
-    """Retrain the taste head on current labels and rescore everything.
-
-    Seconds of CPU once embeddings exist (run app.embed for new images first)."""
+    """Retrain a taste model per style (anime, realistic) on current labels and
+    rescore each style's images. Seconds of CPU once embeddings exist."""
     from . import taste
 
-    try:
-        return taste.train()
-    except SystemExit as e:
-        raise HTTPException(409, str(e))
+    results = taste.train_styles()
+    if all("skipped" in r for r in results.values()):
+        raise HTTPException(409, "; ".join(r.get("skipped", "") for r in results.values()))
+    return results
 
 
 @app.get("/api/tournament")
@@ -944,12 +943,21 @@ def dashboard():
         ).fetchone()["n"]
         styles = {r["style"]: r["n"] for r in db.execute(
             "SELECT style, count(*) AS n FROM image_styles GROUP BY style")}
-        head = latest_head()
-        labels_since = None
-        if head and head.get("trained_at"):
-            labels_since = db.execute(
-                "SELECT count(*) AS n FROM labels WHERE source='manual' AND kind='binary'"
-                " AND created_at > ?", (head["trained_at"],)).fetchone()["n"]
+        # one model per style
+        models = {}
+        for st in ("anime", "realistic"):
+            h = latest_head(st)
+            if not h:
+                continue
+            m = h.get("metrics", {})
+            ls = db.execute(
+                "SELECT count(*) AS n FROM labels l"
+                " JOIN image_styles s ON s.image_id = l.image_id AND s.style = ?"
+                " WHERE l.source='manual' AND l.kind='binary' AND l.created_at > ?",
+                (st, h["trained_at"])).fetchone()["n"]
+            models[st] = {"name": h["name"], "trained_at": h["trained_at"],
+                          "val_accuracy": m.get("val_accuracy"), "val_auc": m.get("val_auc"),
+                          "labels_since": ls}
 
     liked = by_value.get(1.0, 0)
     collection = {
@@ -959,12 +967,9 @@ def dashboard():
         "anime": styles.get("anime", 0), "realistic": styles.get("realistic", 0),
     }
     labeled = total - collection["unlabeled"]
-    model = None
-    if head:
-        m = head.get("metrics", {})
-        model = {"name": head.get("name"), "trained_at": head.get("trained_at"),
-                 "val_accuracy": m.get("val_accuracy"), "val_auc": m.get("val_auc"),
-                 "labels_since": labels_since}
+    # for the suggested action: most "stale" model (most new labels since train)
+    labels_since = max((mm["labels_since"] for mm in models.values()), default=0)
+    has_model = bool(models)
 
     # one suggested next action, by state
     if total == 0:
@@ -972,16 +977,16 @@ def dashboard():
     elif labeled < 50:
         nxt = {"action": "nav", "href": "/static/index.html",
                "label": f"Rate {50 - labeled} more images to unlock training"}
-    elif model is None:
-        nxt = {"action": "train", "label": "Train your first taste model"}
-    elif (labels_since or 0) >= 50:
+    elif not has_model:
+        nxt = {"action": "train", "label": "Train your taste models"}
+    elif labels_since >= 50:
         nxt = {"action": "train", "label": f"{labels_since} new ratings since last train — retrain"}
     elif liked >= 6:
         nxt = {"action": "nav", "href": "/static/tournament.html",
                "label": "Rank your favorites in a tournament"}
     else:
         nxt = {"action": "nav", "href": "/static/index.html", "label": "Keep rating"}
-    return {"collection": collection, "model": model, "next": nxt}
+    return {"collection": collection, "models": models, "next": nxt}
 
 
 @app.get("/api/styles")
