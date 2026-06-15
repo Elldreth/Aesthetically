@@ -119,6 +119,15 @@
   #lora-preview .pcell img { width: 100%; height: 100%; object-fit: cover; border-radius: var(--radius-sm); display: block; }
   #lora-preview .pcell .ps { position: absolute; left: 3px; top: 3px; background: rgba(0,0,0,.65);
     border-radius: var(--radius-sm); padding: 0 5px; font-size: 11px; font-variant-numeric: tabular-nums; }
+  #lora-preview .pcell.excluded img { opacity: .25; }
+  #lora-preview .pcell .px { display: none; position: absolute; right: 4px; bottom: 4px;
+    background: rgba(226,96,106,.95); color: #fff; border-radius: 50%; width: 20px; height: 20px;
+    text-align: center; line-height: 20px; font-size: 13px; }
+  #lora-preview .pcell.excluded .px { display: block; }
+  #lora-preview .pcell .pzoom { position: absolute; right: 3px; top: 3px; width: 22px; height: 22px;
+    padding: 0; display: none; align-items: center; justify-content: center;
+    background: rgba(0,0,0,.6); border: none; color: #fff; border-radius: var(--radius-sm); cursor: pointer; }
+  #lora-preview .pcell:hover .pzoom { display: flex; }
   .cluster-head input { width: 150px; }
 </style>
 <script src="/static/app.js"></script>
@@ -310,14 +319,29 @@ $('b-train').addEventListener('click', async () => {
   setTrainStatus('busy', 'curating dataset…');
   try {
     const ov = loraOverrides();
-    const r = await api('/api/studio/train_lora', {
-      name: $('lora-name').value.trim(), max_images: +$('lora-k').value,
-      preset: $('lora-preset').value, style: $('lora-style').value,
-      model: $('lora-model').value || null,
-      ...($('lora-hands').value ? {hand_filter: $('lora-hands').value} : {}),
+    const ovBody = {
       ...(ov.steps ? {steps: Math.round(ov.steps)} : {}),
       ...(ov.lr != null ? {lr: ov.lr} : {}),
-      ...(ov.rank ? {rank: Math.round(ov.rank)} : {})});
+      ...(ov.rank ? {rank: Math.round(ov.rank)} : {})};
+    let r;
+    if (previewIds.length) {
+      // Train on exactly the previewed set, minus any you excluded.
+      const ids = previewIds.filter(id => !excluded.has(id));
+      if (ids.length < 10) {
+        setTrainStatus('fail', 'too few');
+        toast(`Only ${ids.length} left after exclusions — need at least 10`);
+        $('b-train').disabled = false; return;
+      }
+      r = await api('/api/studio/train_cluster_lora', {
+        name: $('lora-name').value.trim(), image_ids: ids, max_images: ids.length,
+        preset: $('lora-preset').value, model: $('lora-model').value || null, ...ovBody});
+    } else {
+      r = await api('/api/studio/train_lora', {
+        name: $('lora-name').value.trim(), max_images: +$('lora-k').value,
+        preset: $('lora-preset').value, style: $('lora-style').value,
+        model: $('lora-model').value || null,
+        ...($('lora-hands').value ? {hand_filter: $('lora-hands').value} : {}), ...ovBody});
+    }
     toast(`Run #${r.run_id}: ${r.dataset_size} images → ${r.model || 'default'} · ${r.preset} · ` +
           `${r.steps} steps, lr ${r.lr}, rank ${r.rank}. Training…`);
     pollRun(r.run_id);
@@ -328,6 +352,20 @@ $('b-train').addEventListener('click', async () => {
   $('b-train').disabled = false; loadRuns();
 });
 
+// Preview state: the previewed dataset ids and the ones the user excluded.
+let previewIds = [], excluded = new Set();
+function clearPreview() {
+  previewIds = []; excluded.clear();
+  $('lora-preview').hidden = true; $('lora-preview').textContent = '';
+  $('preview-head').hidden = true;
+}
+function updateExcludeHead() {
+  const n = previewIds.length, ex = excluded.size;
+  $('preview-head').textContent = ex
+    ? `${n} images · ${ex} excluded · ${n - ex} will train — click to toggle, ⤢ to enlarge`
+    : `${n} images in this dataset — click any to exclude it, ⤢ to enlarge (highest taste first)`;
+}
+
 $('b-preview').addEventListener('click', async () => {
   const btn = $('b-preview'), head = $('preview-head'), grid = $('lora-preview');
   btn.disabled = true; head.hidden = false; grid.hidden = false;
@@ -336,15 +374,15 @@ $('b-preview').addEventListener('click', async () => {
     const params = new URLSearchParams({style: $('lora-style').value, max_images: +$('lora-k').value});
     if ($('lora-hands').value) params.set('hand_filter', $('lora-hands').value);
     const r = await api('/api/studio/dataset_preview?' + params);
-    if (!r.count) { head.textContent = 'No images match these settings.'; return; }
-    head.textContent = `${r.count} images in this dataset (highest taste first — click to enlarge)`;
+    if (!r.count) { previewIds = []; head.textContent = 'No images match these settings.'; return; }
+    previewIds = r.items.map(it => it.id); excluded.clear();
     const entries = r.items.map(it => ({
       url: '/img/' + it.id,
       label: 'image ' + it.id + (it.taste != null ? ' · taste ' + it.taste.toFixed(2) : ''),
     }));
     r.items.forEach((it, i) => {
       const cell = document.createElement('div');
-      cell.className = 'pcell';
+      cell.className = 'pcell'; cell.dataset.id = it.id;
       const img = document.createElement('img');
       img.loading = 'lazy'; img.src = '/thumb/' + it.id; img.alt = 'image ' + it.id;
       cell.appendChild(img);
@@ -353,11 +391,22 @@ $('b-preview').addEventListener('click', async () => {
         s.className = 'ps'; s.textContent = it.taste.toFixed(2);
         cell.appendChild(s);
       }
-      cell.addEventListener('click', () => lightbox(entries, i));
+      const x = document.createElement('span'); x.className = 'px'; x.textContent = '✕';
+      cell.appendChild(x);
+      const zoom = document.createElement('button');
+      zoom.className = 'pzoom'; zoom.innerHTML = ICONS.expand; zoom.title = 'Enlarge';
+      zoom.addEventListener('click', e => { e.stopPropagation(); lightbox(entries, i); });
+      cell.appendChild(zoom);
+      cell.addEventListener('click', () => {
+        if (excluded.has(it.id)) excluded.delete(it.id); else excluded.add(it.id);
+        cell.classList.toggle('excluded');
+        updateExcludeHead();
+      });
       grid.appendChild(cell);
     });
+    updateExcludeHead();
   } catch (e) {
-    head.textContent = 'Preview failed: ' + e.message;
+    previewIds = []; head.textContent = 'Preview failed: ' + e.message;
   } finally { btn.disabled = false; }
 });
 
@@ -561,6 +610,8 @@ async function loadPresets() {
   $('lora-k').value = PRESETS.default_max_images;
   ['lora-preset', 'lora-k', 'lora-steps', 'lora-lr', 'lora-rank']
     .forEach(id => $(id).addEventListener('input', updateReadout));
+  // changing the dataset (style / hands / count) invalidates a shown preview
+  ['lora-style', 'lora-hands', 'lora-k'].forEach(id => $(id).addEventListener('input', clearPreview));
   $('lora-style').addEventListener('change', () => { syncModelToStyle(); updateReadout(); });
   $('lora-model').addEventListener('change', updateReadout);
   $('lora-hands').addEventListener('change', updateReadout);
