@@ -566,12 +566,38 @@ def studio_delete_lora(body: DeleteLoraIn):
         raise _studio_guard(e)
 
 
+class StarLoraIn(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    starred: bool = True
+
+
+@app.post("/api/studio/star_lora")
+def studio_star_lora(body: StarLoraIn):
+    """Star/unstar a LoRA by name so favorites don't get lost."""
+    with conn() as db:
+        if body.starred:
+            db.execute("INSERT OR IGNORE INTO lora_favorites (name) VALUES (?)", (body.name,))
+        else:
+            db.execute("DELETE FROM lora_favorites WHERE name = ?", (body.name,))
+    return {"name": body.name, "starred": body.starred}
+
+
+@app.get("/api/studio/stars")
+def studio_stars():
+    with conn() as db:
+        rows = db.execute("SELECT name FROM lora_favorites").fetchall()
+    return {"names": [r["name"] for r in rows]}
+
+
 @app.get("/api/studio/runs")
 def studio_runs():
     with conn() as db:
         rows = db.execute(
             "SELECT id, name, status, started_at, finished_at, artifact_path,"
-            " dataset_fingerprint_json FROM training_runs ORDER BY id DESC LIMIT 50"
+            " dataset_fingerprint_json,"
+            " EXISTS (SELECT 1 FROM lora_favorites f WHERE f.name = artifact_path) AS starred"
+            " FROM training_runs"
+            " ORDER BY starred DESC, id DESC LIMIT 50"
         ).fetchall()
     return {"items": [dict(r) for r in rows]}
 

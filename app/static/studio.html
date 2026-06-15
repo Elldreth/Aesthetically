@@ -51,6 +51,7 @@
     <div class="row" style="margin-top:8px">
       <label class="dim">model <select id="gen-model" aria-label="Base checkpoint"></select></label>
       <label class="dim">LoRA <select id="gen-lora" aria-label="LoRA"><option value="">none</option></select></label>
+      <button class="btn" id="b-star-lora" title="Star/unstar the selected LoRA" aria-label="Star selected LoRA">☆</button>
       <button class="btn" id="b-del-lora" title="Permanently delete the selected LoRA" aria-label="Delete selected LoRA">🗑</button>
       <label class="dim">weight <input id="gen-weight" type="number" value="0.6" min="0" max="1.5" step="0.1" style="width:62px" aria-label="LoRA weight"></label>
       <label class="dim">seeds <select id="n" aria-label="Number of seeds"><option>2</option><option selected>4</option><option>6</option><option>8</option></select></label>
@@ -112,6 +113,10 @@
   .cluster-card { background: var(--surface); border: 1px solid var(--border);
     border-radius: var(--radius); padding: 10px; margin-top: 10px; }
   .cluster-head { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+  .star-btn { background: none; border: none; cursor: pointer; font-size: 15px;
+    color: var(--text-dim); padding: 0 2px; line-height: 1; vertical-align: middle; }
+  .star-btn.on { color: #e0b15a; }
+  #b-star-lora.on { color: #e0b15a; }
   .cluster-thumbs { display: flex; gap: 4px; }
   .cluster-thumbs img { width: 64px; height: 64px; object-fit: cover; border-radius: var(--radius-sm); }
   #lora-preview { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
@@ -140,6 +145,24 @@ helpOverlay([
 
 const $ = id => document.getElementById(id);
 let sessionId = null;
+let STARS = new Set();
+
+// Re-sort the Generate LoRA picker: starred first (★), then taste, then alpha.
+function decorateLoraOptions() {
+  const sel = $('gen-lora');
+  const cur = sel.value;
+  const names = [...sel.options].map(o => o.value).filter(v => v);
+  names.sort((a, b) =>
+    (STARS.has(b) - STARS.has(a)) ||
+    (b.includes('taste') - a.includes('taste')) || a.localeCompare(b));
+  sel.innerHTML = '<option value="">none</option>';
+  for (const name of names) {
+    const o = document.createElement('option'); o.value = name;
+    o.textContent = (STARS.has(name) ? '★ ' : '') + name;
+    sel.appendChild(o);
+  }
+  sel.value = cur;
+}
 
 function setHealthBadge(kind, text) {
   const b = $('health');
@@ -171,6 +194,7 @@ function populateGenControls(h) {
     const o = document.createElement('option'); o.value = name; o.textContent = name;
     $('gen-lora').appendChild(o);
   }
+  decorateLoraOptions();          // apply ★ + starred-first ordering
   if (models.length || loras.length) _populatedControls = true;
 }
 
@@ -206,6 +230,23 @@ $('b-del-lora').addEventListener('click', async () => {
     loadRuns();
   } catch (e) { toast('Delete failed: ' + e.message); }
   finally { btn.disabled = false; }
+});
+
+function refreshStarBtn() {
+  const on = !!$('gen-lora').value && STARS.has($('gen-lora').value);
+  $('b-star-lora').textContent = on ? '★' : '☆';
+  $('b-star-lora').classList.toggle('on', on);
+}
+$('gen-lora').addEventListener('change', refreshStarBtn);
+$('b-star-lora').addEventListener('click', async () => {
+  const name = $('gen-lora').value;
+  if (!name) { toast('Pick a LoRA to star first'); return; }
+  const next = !STARS.has(name);
+  try {
+    await setStar(name, next);
+    refreshStarBtn(); decorateLoraOptions(); loadRuns();
+    toast(next ? `Starred "${name}"` : `Unstarred "${name}"`);
+  } catch (e) { toast('Star failed: ' + e.message); }
 });
 
 async function rateResult(imageId, value, label) {
@@ -285,6 +326,28 @@ function statusBadge(status) {
   return b;
 }
 
+async function setStar(name, starred) {
+  await api('/api/studio/star_lora', {name, starred});
+  if (starred) STARS.add(name); else STARS.delete(name);
+}
+
+function starToggle(name, starred) {
+  const b = document.createElement('button');
+  b.className = 'star-btn' + (starred ? ' on' : '');
+  b.textContent = starred ? '★' : '☆';
+  b.title = starred ? 'Starred — click to unstar' : 'Star this LoRA so it stays easy to find';
+  b.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const next = !b.classList.contains('on');
+    try {
+      await setStar(name, next);
+      b.classList.toggle('on', next); b.textContent = next ? '★' : '☆';
+      decorateLoraOptions();          // keep the Generate picker in sync
+    } catch (err) { toast('Star failed: ' + err.message); }
+  });
+  return b;
+}
+
 async function loadRuns() {
   const r = await api('/api/studio/runs');
   const tb = $('runs').querySelector('tbody');
@@ -316,8 +379,11 @@ async function loadRuns() {
     cells.forEach((text, i) => {
       const td = document.createElement('td');
       if (i === 2) td.appendChild(statusBadge(run.status));
-      else td.textContent = text;
-      if (i === 3 || i === 4) td.className = 'dim';
+      else if (i === 4 && run.artifact_path) {
+        td.className = 'dim';
+        td.append(starToggle(run.artifact_path, run.starred),
+                  document.createTextNode(' ' + run.artifact_path));
+      } else { td.textContent = text; if (i === 3 || i === 4) td.className = 'dim'; }
       tr.appendChild(td);
     });
     tb.appendChild(tr);
@@ -642,6 +708,7 @@ async function loadPresets() {
 
 (async () => {
   sessionId = (await api('/api/sessions', {name: 'studio'})).session_id;
+  try { STARS = new Set((await api('/api/studio/stars')).names); } catch {}
   loadPresets();
   health(); loadRuns(); setInterval(health, 30000);
 })();
