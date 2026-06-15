@@ -115,6 +115,12 @@ CREATE TABLE IF NOT EXISTS hand_scores (
 );
 CREATE INDEX IF NOT EXISTS idx_hand_scores_score ON hand_scores(score);
 
+-- Favorited LoRAs (by Artifex name) so good ones don't get lost in the list.
+CREATE TABLE IF NOT EXISTS lora_favorites (
+  name TEXT PRIMARY KEY,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- Hand-quality training negatives: images the user marked as having bad hands.
 -- Good examples come free from likes (liked => good hands), so only bad needs
 -- marking. One row per image (upserted); label 0 = bad hands.

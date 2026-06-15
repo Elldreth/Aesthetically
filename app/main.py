@@ -518,6 +518,25 @@ class TrainLoraIn(BaseModel):
     rank: int | None = Field(default=None, ge=4, le=128)
 
 
+@app.get("/api/studio/dataset_preview")
+def studio_dataset_preview(style: str | None = None, max_images: int = 60,
+                           hand_filter: str | None = None):
+    """The exact images build_taste_dataset would train on, for a preview grid."""
+    from . import studio
+
+    st = None if style in (None, "all") else style
+    if st is not None and st not in ("anime", "realistic"):
+        raise HTTPException(422, "style must be anime, realistic, or all")
+    hf = hand_filter if hand_filter in ("good", "not_bad") else None
+    try:
+        ds = studio.build_taste_dataset(max(10, min(max_images, 200)), style=st, hand_filter=hf)
+    except Exception as e:
+        raise _studio_guard(e)
+    items = sorted(ds, key=lambda c: (c.get("taste") or 0), reverse=True)
+    return {"count": len(items),
+            "items": [{"id": c["id"], "taste": c.get("taste")} for c in items]}
+
+
 @app.post("/api/studio/train_lora")
 def studio_train_lora(body: TrainLoraIn):
     from . import studio
@@ -532,12 +551,53 @@ def studio_train_lora(body: TrainLoraIn):
         raise _studio_guard(e)
 
 
+class DeleteLoraIn(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+
+
+@app.post("/api/studio/delete_lora")
+def studio_delete_lora(body: DeleteLoraIn):
+    """Permanently delete a trained LoRA (Artifex file + its run records)."""
+    from . import studio
+
+    try:
+        return studio.delete_lora(body.name)
+    except Exception as e:
+        raise _studio_guard(e)
+
+
+class StarLoraIn(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    starred: bool = True
+
+
+@app.post("/api/studio/star_lora")
+def studio_star_lora(body: StarLoraIn):
+    """Star/unstar a LoRA by name so favorites don't get lost."""
+    with conn() as db:
+        if body.starred:
+            db.execute("INSERT OR IGNORE INTO lora_favorites (name) VALUES (?)", (body.name,))
+        else:
+            db.execute("DELETE FROM lora_favorites WHERE name = ?", (body.name,))
+    return {"name": body.name, "starred": body.starred}
+
+
+@app.get("/api/studio/stars")
+def studio_stars():
+    with conn() as db:
+        rows = db.execute("SELECT name FROM lora_favorites").fetchall()
+    return {"names": [r["name"] for r in rows]}
+
+
 @app.get("/api/studio/runs")
 def studio_runs():
     with conn() as db:
         rows = db.execute(
             "SELECT id, name, status, started_at, finished_at, artifact_path,"
-            " dataset_fingerprint_json FROM training_runs ORDER BY id DESC LIMIT 50"
+            " dataset_fingerprint_json,"
+            " EXISTS (SELECT 1 FROM lora_favorites f WHERE f.name = artifact_path) AS starred"
+            " FROM training_runs"
+            " ORDER BY starred DESC, id DESC LIMIT 50"
         ).fetchall()
     return {"items": [dict(r) for r in rows]}
 
