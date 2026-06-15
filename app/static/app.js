@@ -531,6 +531,20 @@ function _openExportBest() {
   const unlRow = mkRow('unrated only', unl);
   unlRow.title = 'only pure predictions — images you have not rated yourself';
 
+  const styleSel = document.createElement('select');
+  for (const [v, t] of [['', 'all styles'], ['anime', 'anime'], ['realistic', 'realistic']]) {
+    const o = document.createElement('option'); o.value = v; o.textContent = t;
+    styleSel.appendChild(o);
+  }
+  const handSel = document.createElement('select');
+  for (const [v, t] of [['', 'any'], ['good', 'good hands only (tagged)'],
+                        ['not_bad', 'exclude bad hands']]) {
+    const o = document.createElement('option'); o.value = v; o.textContent = t;
+    handSel.appendChild(o);
+  }
+  const handRow = mkRow('hands', handSel);
+  handRow.title = 'uses your hand tags — anime only';
+
   const modeSel = document.createElement('select');
   for (const [v, t] of [['copy', 'copy'], ['link', 'hardlink (no extra disk)'],
                         ['move', 'move']]) {
@@ -555,6 +569,8 @@ function _openExportBest() {
     if (pick.value === 'top') body.top = +amount.value;
     else if (pick.value === 'min_score') body.min_score = +amount.value;
     else body.buckets = true;
+    if (styleSel.value) body.style = styleSel.value;
+    if (handSel.value) body.hand_filter = handSel.value;
     go.disabled = true;
     try {
       await api('/api/select', body);
@@ -572,6 +588,8 @@ function _openExportBest() {
     mkRow('output folder', out),
     mkRow('what to take', pick),
     mkRow('amount', amount),
+    mkRow('style', styleSel),
+    handRow,
     unlRow,
     mkRow('transfer', modeSel),
     row);

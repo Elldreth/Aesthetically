@@ -511,6 +511,7 @@ class TrainLoraIn(BaseModel):
     max_images: int = Field(default=60, ge=10, le=200)
     preset: str = Field(default="balanced", pattern="^(subtle|balanced|strong)$")
     style: str | None = Field(default=None, pattern="^(anime|realistic|all)$")
+    hand_filter: str | None = Field(default=None, pattern="^(good|not_bad)$")
     model: str | None = None
     steps: int | None = Field(default=None, ge=200, le=6000)  # optional override
     lr: float | None = Field(default=None, gt=0, le=1e-2)
@@ -525,8 +526,8 @@ def studio_train_lora(body: TrainLoraIn):
     try:
         return studio.train_taste_lora(body.name, max_images=body.max_images,
                                        preset=body.preset, model=body.model,
-                                       style=style, steps=body.steps,
-                                       lr=body.lr, rank=body.rank)
+                                       style=style, hand_filter=body.hand_filter,
+                                       steps=body.steps, lr=body.lr, rank=body.rank)
     except Exception as e:
         raise _studio_guard(e)
 
@@ -760,6 +761,8 @@ class SelectIn(BaseModel):
     min_score: float | None = Field(default=None, ge=0, le=1)
     buckets: bool = False
     unlabeled_only: bool = False
+    style: str | None = Field(default=None, pattern="^(anime|realistic)$")
+    hand_filter: str | None = Field(default=None, pattern="^(good|not_bad)$")
     mode: str = Field(default="copy", pattern="^(copy|link|move)$")
 
 
@@ -777,7 +780,8 @@ def select_images(body: SelectIn):
         "export", str(out),
         lambda progress, cancel: run_select(
             out, top=body.top, min_score=body.min_score, buckets=body.buckets,
-            unlabeled_only=body.unlabeled_only, mode=body.mode, progress=progress),
+            unlabeled_only=body.unlabeled_only, style=body.style,
+            hand_filter=body.hand_filter, mode=body.mode, progress=progress),
     )
     return {"started": True, "job_id": job.id}
 

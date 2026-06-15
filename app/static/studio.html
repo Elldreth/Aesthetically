@@ -63,6 +63,11 @@
     <div class="row">
       <input id="lora-name" placeholder="lora name" value="my-taste-v1" size="16" aria-label="LoRA name">
       <label class="dim">images of <select id="lora-style" aria-label="Which liked images to train on"></select></label>
+      <label class="dim">hands <select id="lora-hands" aria-label="Hand-quality filter" title="anime only — uses your hand tags">
+        <option value="">any</option>
+        <option value="good">good only (tagged)</option>
+        <option value="not_bad">exclude bad</option>
+      </select></label>
       <label class="dim">top <input id="lora-k" type="number" value="60" min="10" max="200" aria-label="How many images"> images</label>
       <label class="dim">base model <select id="lora-model" aria-label="Base checkpoint to train against"></select></label>
       <label class="dim">strength <select id="lora-preset" aria-label="Training preset"></select></label>
@@ -300,6 +305,7 @@ $('b-train').addEventListener('click', async () => {
       name: $('lora-name').value.trim(), max_images: +$('lora-k').value,
       preset: $('lora-preset').value, style: $('lora-style').value,
       model: $('lora-model').value || null,
+      ...($('lora-hands').value ? {hand_filter: $('lora-hands').value} : {}),
       ...(ov.steps ? {steps: Math.round(ov.steps)} : {}),
       ...(ov.lr != null ? {lr: ov.lr} : {}),
       ...(ov.rank ? {rank: Math.round(ov.rank)} : {})});
@@ -451,8 +457,12 @@ function updateReadout() {
   if (!PRESETS) return;
   const p = PRESETS.presets[$('lora-preset').value];
   const style = $('lora-style').value;
+  const hand = $('lora-hands').value;
   const counts = PRESETS.liked_counts || {};
-  const avail = counts[style] != null ? counts[style] : 0;
+  let avail = counts[style] != null ? counts[style] : 0;
+  let handLabel = '';
+  if (style === 'anime' && hand === 'good') { avail = counts.anime_good_hands || 0; handLabel = 'good-hands '; }
+  else if (style === 'anime' && hand === 'not_bad') { avail = counts.anime_not_bad_hands || 0; handLabel = 'no-bad-hands '; }
   const want = +$('lora-k').value || 0;
   const imgs = Math.min(want, avail);            // dataset caps at what's eligible
   const model = $('lora-model').value || 'Artifex default';
@@ -468,7 +478,7 @@ function updateReadout() {
   $('lora-lr').placeholder = String(p.lr);
   $('lora-rank').placeholder = String(p.rank);
   $('lora-steps').placeholder = `auto ≈ ${derived.toLocaleString()}`;
-  const scope = style === 'all' ? 'liked images' : `${style} likes`;
+  const scope = style === 'all' ? `${handLabel}liked images` : `${handLabel}${style} likes`;
   const r = $('train-readout');
   if (avail < 10) {
     r.textContent = `Only ${avail} eligible ${scope} — rate at least 10 ${style === 'all' ? 'images' : style} first.`;
@@ -511,6 +521,7 @@ async function loadPresets() {
     .forEach(id => $(id).addEventListener('input', updateReadout));
   $('lora-style').addEventListener('change', () => { syncModelToStyle(); updateReadout(); });
   $('lora-model').addEventListener('change', updateReadout);
+  $('lora-hands').addEventListener('change', updateReadout);
   $('b-reset-adv').addEventListener('click', () => {
     ['lora-steps', 'lora-lr', 'lora-rank'].forEach(id => $(id).value = '');
     updateReadout();
