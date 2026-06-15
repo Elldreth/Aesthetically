@@ -103,6 +103,16 @@ async function loadMore() {
     nm.className = 'name';
     nm.textContent = it.name;
     c.append(img, sc, nm);
+    c.style.cursor = 'zoom-in';
+    c.addEventListener('click', () => {
+      const cells = [...document.querySelectorAll('.cell')];
+      const entries = cells.map(el => ({
+        url: el.dataset.full, label: el.dataset.label,
+      }));
+      lightbox(entries, cells.indexOf(c));
+    });
+    c.dataset.full = `/scan/img/${scanId}/${it.i}?full=1`;
+    c.dataset.label = `${it.name} · score ${it.score.toFixed(2)}`;
     $('grid').appendChild(c);
   }
   shown += data.items.length;

@@ -40,6 +40,7 @@
         <option value="liked">liked</option>
         <option value="maybe">maybe</option>
         <option value="disliked">disliked</option>
+        <option value="removed">removed</option>
         <option value="all">everything</option>
       </select>
       <select id="mode" aria-label="Sort order">
@@ -48,6 +49,12 @@
         <option value="uncertain">most uncertain first</option>
         <option value="newest">newest first</option>
         <option value="default">oldest first</option>
+      </select>
+      <select id="style" aria-label="Style" title="Filter by style">
+        <option value="">all styles</option>
+        <option value="anime">anime</option>
+        <option value="realistic">realistic</option>
+        <option value="untagged">untagged</option>
       </select>
     </div>
     <div class="sep" role="presentation"></div>
@@ -60,6 +67,24 @@
       <button class="btn btn-nay" id="b-nay" disabled>Nay <kbd>a</kbd></button>
       <button class="btn btn-maybe" id="b-maybe" disabled>Maybe <kbd>w</kbd></button>
       <button class="btn btn-yay" id="b-yay" disabled>Yay <kbd>d</kbd></button>
+    </div>
+    <div class="sep" role="presentation"></div>
+    <div class="group" title="Set the style of selected images">
+      <button class="btn" id="b-anime" disabled>→ Anime</button>
+      <button class="btn" id="b-realistic" disabled>→ Realistic</button>
+    </div>
+    <div class="sep" role="presentation"></div>
+    <div class="group" title="Remove junk (depth maps, etc.) from the queue and training">
+      <button class="btn" id="b-remove" disabled>Remove</button>
+      <button class="btn" id="b-restore" disabled>Restore</button>
+      <select id="dedupe-level" aria-label="Duplicate match sensitivity"
+              title="How alike images must be to count as duplicates">
+        <option value="0">Exact</option>
+        <option value="5" selected>Near (resolution/format twins)</option>
+        <option value="8">Loose (very similar)</option>
+      </select>
+      <button class="btn" id="b-dedupe" title="Find near-identical images and remove all but one of each (reversible)">Remove duplicates</button>
+      <span class="badge" id="dedupe-badge" hidden></span>
     </div>
     <div class="sep" role="presentation"></div>
     <div class="group">
@@ -91,7 +116,8 @@ let sessionId = null, offset = 0, total = 0, items = [], selected = new Set();
 const $ = id => document.getElementById(id);
 
 async function load() {
-  const data = await api(`/api/grid?mode=${$('mode').value}&filter=${$('filter').value}&limit=${LIMIT}&offset=${offset}`);
+  const data = await api(`/api/grid?mode=${$('mode').value}&filter=${$('filter').value}` +
+    `&style=${$('style').value}&limit=${LIMIT}&offset=${offset}`);
   items = data.items; total = data.total; selected.clear();
   const g = $('grid');
   g.textContent = '';
@@ -124,6 +150,19 @@ async function load() {
       s.textContent = it.score.toFixed(2);
       c.appendChild(s);
     }
+    const zoom = document.createElement('button');
+    zoom.className = 'cell-zoom';
+    zoom.title = 'Enlarge'; zoom.setAttribute('aria-label', 'Enlarge image');
+    zoom.innerHTML = ICONS.expand;
+    zoom.addEventListener('click', (e) => {
+      e.stopPropagation();                                 // don't toggle selection
+      const entries = items.map(x => ({
+        url: '/img/' + x.id,
+        label: 'image ' + x.id + (x.score != null ? ' · score ' + x.score.toFixed(2) : ''),
+      }));
+      lightbox(entries, items.indexOf(it));
+    });
+    c.appendChild(zoom);
     c.addEventListener('click', () => {
       const id = it.id;
       selected.has(id) ? selected.delete(id) : selected.add(id);
@@ -145,9 +184,8 @@ function updateInfo() {
   $('info').textContent = `${total.toLocaleString()} ${$('filter').value}${shown}` +
     (selected.size ? ` · selected: ${selected.size}` : '');
   const none = !selected.size;
-  $('b-nay').disabled = none;
-  $('b-maybe').disabled = none;
-  $('b-yay').disabled = none;
+  for (const id of ['b-nay', 'b-maybe', 'b-yay', 'b-anime', 'b-realistic', 'b-remove', 'b-restore'])
+    $(id).disabled = none;
 }
 
 async function bulk(value) {
@@ -166,6 +204,93 @@ async function bulk(value) {
   load();
 }
 
+async function setStyle(style) {
+  if (!selected.size) return;
+  const n = selected.size;
+  try {
+    await api('/api/styles/set', {image_ids: [...selected], style});
+    toast(`Set ${n} image${n === 1 ? '' : 's'} to ${style}`);
+  } catch (e) { toast('Set style failed: ' + e.message); return; }
+  load();
+}
+
+async function remove() {
+  if (!selected.size) return;
+  const ids = [...selected], n = ids.length;
+  try {
+    await api('/api/exclude/bulk', {image_ids: ids, session_id: sessionId});
+  } catch (e) { toast('Remove failed: ' + e.message); return; }
+  toast(`Removed ${n} image${n === 1 ? '' : 's'}`, {action: {label: 'Undo', onClick: async () => {
+    try { await api('/api/exclude/restore', {image_ids: ids}); } catch (e) { toast('Undo failed: ' + e.message); }
+    load();
+  }}});
+  load();
+}
+
+async function restore() {
+  if (!selected.size) return;
+  const n = selected.size;
+  try {
+    await api('/api/exclude/restore', {image_ids: [...selected]});
+    toast(`Restored ${n} image${n === 1 ? '' : 's'}`);
+  } catch (e) { toast('Restore failed: ' + e.message); return; }
+  load();
+}
+
+function setDedupeBadge(kind, text) {
+  const b = $('dedupe-badge');
+  b.className = 'badge' + (kind ? ' ' + kind : '');
+  b.textContent = text;
+  b.hidden = !text;
+}
+
+async function dedupe() {
+  const btn = $('b-dedupe'), orig = btn.textContent;
+  const plural = n => n === 1 ? '' : 's';
+  btn.disabled = true; btn.textContent = 'Scanning…';
+  setDedupeBadge('busy', 'Scanning…');   // immediate feedback, persists until result
+  try {
+    const { job_id } = await api('/api/dedupe', {phash_dist: +$('dedupe-level').value});
+    let job;
+    while (true) {                        // poll right away so fast runs still register
+      job = await api(`/api/jobs/${job_id}`);
+      if (['done', 'failed', 'cancelled'].includes(job.state)) break;
+      if (job.phase) {
+        const prog = job.total ? ` ${job.done}/${job.total}` : '';
+        setDedupeBadge('busy', job.phase + prog + '…');
+      }
+      await new Promise(r => setTimeout(r, 600));
+    }
+    if (job.state !== 'done') {
+      setDedupeBadge('fail', 'Dedupe ' + job.state);
+      toast('Dedupe ' + job.state + (job.error ? ': ' + job.error : ''));
+      return;
+    }
+    const r = job.result || {}, ids = r.removed_ids || [];
+    if (r.removed) {
+      setDedupeBadge('ok', `Removed ${r.removed} (${r.groups} group${plural(r.groups)})`);
+      toast(`Removed ${r.removed} duplicate${plural(r.removed)} across ` +
+            `${r.groups} group${plural(r.groups)} — kept one of each`,
+        {action: {label: 'Undo', onClick: async () => {
+          try { await api('/api/exclude/restore', {image_ids: ids}); setDedupeBadge('', ''); load(); }
+          catch (e) { toast('Undo failed: ' + e.message); }
+        }}});
+      load();
+    } else if (r.groups) {               // groups exist but were already removed earlier
+      setDedupeBadge('ok', `No new dupes · ${r.groups} group${plural(r.groups)} already removed`);
+      toast(`No new duplicates — ${r.groups} group${plural(r.groups)} already de-duplicated`);
+    } else {
+      setDedupeBadge('', 'No duplicates found');
+      toast('No duplicates found');
+    }
+  } catch (e) {
+    setDedupeBadge('fail', 'Failed');
+    toast('Dedupe failed: ' + e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = orig;
+  }
+}
+
 function nextPage() { if (offset + LIMIT < total) { offset += LIMIT; load(); } }
 function prevPage() { if (offset > 0) { offset = Math.max(0, offset - LIMIT); load(); } }
 
@@ -182,10 +307,16 @@ $('b-none').addEventListener('click', () => {
 $('b-nay').addEventListener('click', () => bulk(0));
 $('b-maybe').addEventListener('click', () => bulk(0.5));
 $('b-yay').addEventListener('click', () => bulk(1));
+$('b-anime').addEventListener('click', () => setStyle('anime'));
+$('b-realistic').addEventListener('click', () => setStyle('realistic'));
+$('b-remove').addEventListener('click', remove);
+$('b-restore').addEventListener('click', restore);
+$('b-dedupe').addEventListener('click', dedupe);
 $('b-next').addEventListener('click', nextPage);
 $('b-prev').addEventListener('click', prevPage);
 $('mode').addEventListener('change', () => { offset = 0; load(); });
 $('filter').addEventListener('change', () => { offset = 0; load(); });
+$('style').addEventListener('change', () => { offset = 0; load(); });
 
 function setTrainBadge(kind, text) {
   const b = $('train-badge');
@@ -198,12 +329,14 @@ $('b-train').addEventListener('click', async () => {
   $('b-train').disabled = true;
   setTrainBadge('busy', 'Training…');
   try {
-    const m = await api('/api/train_taste', {});
-    const acc = m.val_accuracy != null ? Math.round(m.val_accuracy * 100) + '%' : 'n/a';
-    const auc = m.val_auc != null ? Number(m.val_auc).toFixed(2) : 'n/a';
-    setTrainBadge('ok', `${m.model} trained`);
-    toast(`${m.model} trained — val accuracy ${acc}, AUC ${auc} ` +
-          `(${m.val_n} held-out images in ${m.val_clusters} clusters)`);
+    const r = await api('/api/train_taste', {});   // { anime: {...}, realistic: {...} }
+    const parts = [];
+    for (const [style, m] of Object.entries(r)) {
+      if (m.skipped) parts.push(`${style}: skipped`);
+      else parts.push(`${style}: ${Math.round(m.val_accuracy * 100)}% acc, ${Number(m.val_auc).toFixed(2)} AUC`);
+    }
+    setTrainBadge('ok', 'Models trained');
+    toast('Retrained — ' + parts.join('  ·  '));
     offset = 0; load();
   } catch (e) {
     setTrainBadge('fail', 'Training failed');
@@ -213,7 +346,7 @@ $('b-train').addEventListener('click', async () => {
 });
 
 document.addEventListener('keydown', e => {
-  if (helpOverlayOpen()) return;
+  if (helpOverlayOpen() || lightboxOpen()) return;
   if (e.key === 'a') bulk(0);          // bulk() no-ops when nothing is selected
   else if (e.key === 'w') bulk(0.5);
   else if (e.key === 'd') bulk(1);

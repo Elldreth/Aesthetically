@@ -138,6 +138,69 @@ def find_groups(db, phash_dist: int, cos_threshold: float | None) -> None:
     print(f"groups: {len(groups)}, non-canonical members hidden from queue: {n_members}")
 
 
+class _NeverCancel:
+    @staticmethod
+    def is_set() -> bool:
+        return False
+
+
+def remove_duplicates(progress: dict | None = None, cancel=None,
+                      phash_dist: int = 0) -> dict:
+    """Find near-identical images and remove all but one per group.
+
+    Reuses the reversible 'exclude' mechanism (the grid's Remove button) — the
+    non-canonical members of each near-duplicate group get an 'exclude' label so
+    they drop out of the queue, grid, and training. NOTHING is deleted from disk
+    and it is undoable via /api/exclude/restore.
+
+    ``phash_dist`` is the perceptual-hash Hamming threshold: 0 = identical hash
+    (true duplicates / re-saves), higher = fuzzier. Default 0 because subtle SD
+    seed variants must stay individually ratable (see module docstring).
+
+    Returns ``{removed, groups, removed_ids}`` so the caller can offer an undo.
+    """
+    cancel = cancel or _NeverCancel()
+    db = get_conn()
+    try:
+        if progress is not None:
+            progress["phase"] = "hashing"
+        fill_phashes(db, progress, cancel)
+        if cancel.is_set():
+            return {"removed": 0, "groups": 0, "removed_ids": []}
+        if progress is not None:
+            progress["phase"] = "grouping"
+        find_groups(db, phash_dist, None)
+        # Reconstruct each group's full membership (canonical + its members) and
+        # keep the lowest-id image that is still present, excluding the rest.
+        # Choosing the keeper among NON-excluded members guarantees a surviving
+        # copy even if the lowest id was already removed (manually or earlier).
+        excluded = {r["image_id"] for r in db.execute(
+            "SELECT image_id FROM current_labels WHERE kind = 'exclude' AND value = 1"
+        ).fetchall()}
+        members: dict[int, set[int]] = {}
+        for r in db.execute("SELECT image_id, canonical_id FROM near_dups").fetchall():
+            members.setdefault(r["canonical_id"], {r["canonical_id"]}).add(r["image_id"])
+        ids: list[int] = []
+        for grp in members.values():
+            survivors = sorted(g for g in grp if g not in excluded)
+            if len(survivors) <= 1:
+                continue  # already down to one (or zero) copy — nothing to remove
+            ids.extend(survivors[1:])  # keep survivors[0], remove the rest
+        ids.sort()
+        groups = len(members)
+        if progress is not None:
+            progress.update(phase="removing", total=len(ids), done=0)
+        db.executemany(
+            "INSERT INTO labels (image_id, kind, value, source)"
+            " VALUES (?, 'exclude', 1, 'dedupe')",
+            [(i,) for i in ids],
+        )
+        db.commit()
+        return {"removed": len(ids), "groups": groups, "removed_ids": ids}
+    finally:
+        db.close()
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     # default 0: on SD seed-cluster data even hamming 2 conflates aesthetic

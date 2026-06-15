@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Aesthetically — Home</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%235b8def'/%3E%3Ccircle cx='8' cy='8' r='3.5' fill='%2314151a'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/app.css">
+<style>
+  main { max-width: 940px; margin: 0 auto; padding: 24px 16px; }
+  .next {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    background: linear-gradient(180deg, rgba(91,141,239,.14), rgba(91,141,239,.06));
+    border: 1px solid rgba(91,141,239,.35); border-radius: var(--radius);
+    padding: 16px 18px; margin-bottom: 20px;
+  }
+  .next h2 { font-size: 16px; }
+  .next p { color: var(--text-dim); font-size: 13px; margin-top: 2px; }
+  .cards { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+  .card { background: var(--surface); border: 1px solid var(--border);
+          border-radius: var(--radius); padding: 16px 18px; }
+  .card h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em;
+             color: var(--text-dim); margin-bottom: 12px; }
+  .stat-line { display: flex; justify-content: space-between; align-items: baseline;
+               padding: 4px 0; font-variant-numeric: tabular-nums; }
+  .stat-line .v { font-weight: 600; }
+  .stat-line.dim { color: var(--text-dim); }
+  .card .actions { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
+  .big-num { font-size: 28px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .muted { color: var(--text-dim); font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="next" id="next" hidden>
+    <div>
+      <h2 id="next-label">…</h2>
+      <p id="next-sub">Your suggested next step.</p>
+    </div>
+    <button class="btn btn-primary" id="next-btn">Go</button>
+  </div>
+
+  <div class="cards">
+    <div class="card" id="card-collection">
+      <h3>Collection</h3>
+      <div class="big-num" id="c-total">–</div>
+      <div class="muted" id="c-sub">images</div>
+      <div style="margin-top:10px">
+        <div class="stat-line"><span>Rated</span><span class="v" id="c-rated">–</span></div>
+        <div class="stat-line dim"><span>Unrated</span><span class="v" id="c-unrated">–</span></div>
+        <div class="stat-line dim"><span>Style</span><span class="v" id="c-style">–</span></div>
+        <div class="stat-line dim"><span>Sources</span><span class="v" id="c-sources">–</span></div>
+      </div>
+      <div class="actions">
+        <button class="btn" id="b-add">Add folder</button>
+        <a class="btn btn-quiet" href="/static/grid.html">Browse grid</a>
+      </div>
+    </div>
+
+    <div class="card" id="card-labels">
+      <h3>Your ratings</h3>
+      <div class="stat-line"><span id="l-yay-label">Liked</span><span class="v" id="l-yay">–</span></div>
+      <div class="stat-line"><span>Maybe</span><span class="v" id="l-maybe">–</span></div>
+      <div class="stat-line"><span>Disliked</span><span class="v" id="l-nay">–</span></div>
+      <div class="stat-line dim"><span>Removed</span><span class="v" id="l-excl">–</span></div>
+      <div class="actions">
+        <a class="btn btn-primary" href="/static/index.html">Rate images</a>
+        <a class="btn btn-quiet" href="/static/tournament.html">Rank favorites</a>
+      </div>
+    </div>
+
+    <div class="card" id="card-model">
+      <h3>Taste model</h3>
+      <div id="model-body"><div class="muted">…</div></div>
+      <div class="actions">
+        <button class="btn btn-primary" id="b-train">Retrain</button>
+        <a class="btn btn-quiet" href="/static/studio.html">Studio</a>
+      </div>
+    </div>
+  </div>
+</main>
+<script src="/static/app.js"></script>
+<script>
+initNav('home');
+helpOverlay([['?', 'Toggle this help']]);
+const $ = id => document.getElementById(id);
+
+async function load() {
+  const d = await api('/api/dashboard');
+  const c = d.collection;
+  $('c-total').textContent = c.total.toLocaleString();
+  $('c-sub').textContent = c.total === 1 ? 'image' : 'images';
+  $('c-rated').textContent = (c.total - c.unlabeled).toLocaleString();
+  $('c-unrated').textContent = c.unlabeled.toLocaleString();
+  $('c-style').textContent = `${(c.anime||0).toLocaleString()} anime · ${(c.realistic||0).toLocaleString()} real`;
+  $('c-sources').textContent = c.sources.toLocaleString();
+  $('l-yay').textContent = c.liked.toLocaleString();
+  $('l-maybe').textContent = c.maybe.toLocaleString();
+  $('l-nay').textContent = c.disliked.toLocaleString();
+  $('l-excl').textContent = c.excluded.toLocaleString();
+
+  const mb = $('model-body');
+  const models = d.models || {};
+  mb.textContent = '';
+  if (!Object.keys(models).length) {
+    mb.innerHTML = '<div class="muted">No models yet — rate images, then train.</div>';
+  } else {
+    for (const style of ['anime', 'realistic']) {
+      const m = models[style];
+      const head = document.createElement('div');
+      head.className = 'stat-line';
+      const a = document.createElement('span'); a.textContent = style;
+      const b = document.createElement('span'); b.className = 'v';
+      if (!m) {
+        b.textContent = 'not trained'; b.style.color = 'var(--text-dim)';
+      } else {
+        const acc = m.val_accuracy != null ? Math.round(m.val_accuracy * 100) + '%' : '—';
+        const auc = m.val_auc != null ? m.val_auc.toFixed(3) : '—';
+        b.textContent = `${acc} acc · ${auc} AUC` + (m.labels_since ? ` · +${m.labels_since}` : '');
+      }
+      head.append(a, b); mb.appendChild(head);
+    }
+  }
+
+  // suggested next action
+  const n = d.next;
+  $('next-label').textContent = n.label;
+  $('next').hidden = false;
+  const btn = $('next-btn');
+  btn.textContent = n.action === 'train' ? 'Retrain' : n.action === 'add' ? 'Add folder' : 'Go';
+  btn.onclick = () => doAction(n);
+}
+
+async function doAction(n) {
+  if (n.action === 'nav') { location.href = n.href; }
+  else if (n.action === 'add') { if (typeof _openAddFolder === 'function') _openAddFolder(); }
+  else if (n.action === 'train') { retrain(); }
+}
+
+async function retrain() {
+  $('b-train').disabled = true;
+  $('b-train').textContent = 'Training…';
+  try {
+    const r = await api('/api/train_taste', {});
+    const parts = [];
+    for (const [style, m] of Object.entries(r)) {
+      if (m.skipped) parts.push(`${style}: skipped`);
+      else parts.push(`${style}: ${Math.round(m.val_accuracy * 100)}% acc, ${m.val_auc} AUC`);
+    }
+    toast('Trained — ' + parts.join('  ·  '));
+    load();
+  } catch (e) { toast('Train failed: ' + e.message); }
+  $('b-train').disabled = false;
+  $('b-train').textContent = 'Retrain';
+}
+
+$('b-train').addEventListener('click', retrain);
+$('b-add').addEventListener('click', () => { if (typeof _openAddFolder === 'function') _openAddFolder(); });
+load();
+</script>
+</body>
+</html>

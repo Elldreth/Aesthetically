@@ -155,7 +155,7 @@ def _ui_response(page: str) -> Response:
 
 @app.get("/")
 def index():
-    return _ui_response("index.html")
+    return _ui_response("home.html")
 
 
 @app.get("/static/{page}.html")
@@ -241,30 +241,42 @@ _SCORED_IMAGES = """
                   LIMIT 1) AS score
           FROM images i) i
 """
+# every fragment ends with a WHERE so a style clause can append uniformly
+_LABELED = (_SCORED_IMAGES + " JOIN current_labels c ON c.image_id = i.id"
+            " WHERE c.kind = 'binary' AND c.value = ")
 _GRID_FILTER = {
     "unrated": _UNRATED,
-    "liked": _SCORED_IMAGES + " JOIN current_labels c ON c.image_id = i.id"
-             " AND c.kind = 'binary' AND c.value = 1.0",
-    "maybe": _SCORED_IMAGES + " JOIN current_labels c ON c.image_id = i.id"
-             " AND c.kind = 'binary' AND c.value = 0.5",
-    "disliked": _SCORED_IMAGES + " JOIN current_labels c ON c.image_id = i.id"
-                " AND c.kind = 'binary' AND c.value = 0.0",
+    "liked": _LABELED + "1.0",
+    "maybe": _LABELED + "0.5",
+    "disliked": _LABELED + "0.0",
+    "removed": _SCORED_IMAGES + " JOIN current_labels c ON c.image_id = i.id"
+               " WHERE c.kind = 'exclude'",
     "all": _SCORED_IMAGES + " WHERE 1=1",
 }
 _GRID_ORDER = dict(_QUEUE_ORDER, newest="i.id DESC")
+_STYLE_CLAUSE = {
+    "anime": " AND EXISTS (SELECT 1 FROM image_styles st WHERE st.image_id=i.id AND st.style='anime')",
+    "realistic": " AND EXISTS (SELECT 1 FROM image_styles st WHERE st.image_id=i.id AND st.style='realistic')",
+    "untagged": " AND NOT EXISTS (SELECT 1 FROM image_styles st WHERE st.image_id=i.id)",
+}
 
 
 @app.get("/api/grid")
 def grid(mode: str = "worst", limit: int = 60, offset: int = 0,
-         filter: str = "unrated"):
+         filter: str = "unrated", style: str | None = None):
     """Paged images for the grid, sorted by taste score. filter selects the
-    label bucket; rated images stay browsable (newest mode shows recent work)."""
+    label bucket; style (anime/realistic/untagged) optionally narrows further."""
     order = _GRID_ORDER.get(mode)
     source = _GRID_FILTER.get(filter)
     if order is None:
         raise HTTPException(422, f"mode must be one of {sorted(_GRID_ORDER)}")
     if source is None:
         raise HTTPException(422, f"filter must be one of {sorted(_GRID_FILTER)}")
+    if style:
+        clause = _STYLE_CLAUSE.get(style)
+        if clause is None:
+            raise HTTPException(422, f"style must be one of {sorted(_STYLE_CLAUSE)}")
+        source = source + clause
     with conn() as db:
         total = db.execute(f"SELECT count(*) AS n {source}").fetchone()["n"]
         rows = db.execute(
@@ -308,34 +320,86 @@ def bulk_label(body: BulkLabelIn):
     return {"labeled": len(body.image_ids)}
 
 
+class BulkIdsIn(BaseModel):
+    image_ids: list[int] = Field(min_length=1, max_length=2000)
+    session_id: int | None = None
+
+
+@app.post("/api/exclude/bulk")
+def bulk_exclude(body: BulkIdsIn):
+    """Remove images (depth maps, junk) — excludes them from the queue and from
+    training. Reversible via /api/exclude/restore."""
+    with conn() as db:
+        _require_images(db, body.image_ids)
+        db.executemany(
+            "INSERT INTO labels (image_id, kind, value, source, session_id)"
+            " VALUES (?, 'exclude', 1, 'manual', ?)",
+            [(i, body.session_id) for i in body.image_ids],
+        )
+    return {"excluded": len(body.image_ids)}
+
+
+@app.post("/api/exclude/restore")
+def bulk_restore(body: BulkIdsIn):
+    """Un-remove: drop the exclude labels so the images return to the pool."""
+    with conn() as db:
+        placeholders = ",".join("?" * len(body.image_ids))
+        cur = db.execute(
+            f"DELETE FROM labels WHERE kind='exclude' AND image_id IN ({placeholders})",
+            body.image_ids,
+        )
+    return {"restored": cur.rowcount}
+
+
 @app.post("/api/train_taste")
 def train_taste():
-    """Retrain the taste head on current labels and rescore everything.
-
-    Seconds of CPU once embeddings exist (run app.embed for new images first)."""
+    """Retrain a taste model per style (anime, realistic) on current labels and
+    rescore each style's images. Seconds of CPU once embeddings exist."""
     from . import taste
 
-    try:
-        return taste.train()
-    except SystemExit as e:
-        raise HTTPException(409, str(e))
+    results = taste.train_styles()
+    if all("skipped" in r for r in results.values()):
+        raise HTTPException(409, "; ".join(r.get("skipped", "") for r in results.values()))
+    return results
 
 
 @app.get("/api/tournament")
-def tournament(size: int = 6):
-    """A screen of liked images for best-of-N ranking; least-compared first."""
+def tournament(size: int = 6, style: str | None = None, exclude: str | None = None):
+    """A screen of liked images of ONE style for best-of-N ranking, least-
+    compared first. Ranking across styles is apples-vs-oranges, so a screen is
+    always one style. With style omitted, defaults to whichever style has the
+    most liked images. exclude = comma-separated ids to skip (e.g. images
+    already on screen when fetching a replacement)."""
+    try:
+        skip = [int(x) for x in exclude.split(",") if x.strip()] if exclude else []
+    except ValueError:
+        raise HTTPException(422, "exclude must be comma-separated ids")
     with conn() as db:
+        if style is None:
+            row = db.execute(
+                "SELECT s.style, count(*) AS n FROM current_labels c"
+                " JOIN image_styles s ON s.image_id = c.image_id"
+                " WHERE c.kind='binary' AND c.value=1.0 GROUP BY s.style"
+                " ORDER BY n DESC LIMIT 1").fetchone()
+            style = row["style"] if row else "anime"
+        if style not in ("anime", "realistic"):
+            raise HTTPException(422, "style must be anime or realistic")
+        not_in = f"AND i.id NOT IN ({','.join('?' * len(skip))})" if skip else ""
         rows = db.execute(
-            """SELECT i.id,
+            f"""SELECT i.id,
                       (SELECT count(*) FROM labels pw WHERE pw.kind = 'pairwise'
                        AND (pw.image_id = i.id OR pw.opponent_image_id = i.id)) AS comparisons
                FROM images i
                JOIN current_labels c ON c.image_id = i.id AND c.kind = 'binary' AND c.value = 1.0
+               JOIN image_styles st ON st.image_id = i.id AND st.style = ?
                WHERE NOT EXISTS (SELECT 1 FROM near_dups d WHERE d.image_id = i.id)
+                 AND NOT EXISTS (SELECT 1 FROM current_labels e
+                                 WHERE e.image_id = i.id AND e.kind = 'exclude')
+                 {not_in}
                ORDER BY comparisons, random() LIMIT ?""",
-            (size,),
+            (style, *skip, size),
         ).fetchall()
-    return {"items": [dict(r) for r in rows]}
+    return {"style": style, "items": [dict(r) for r in rows]}
 
 
 class TournamentIn(BaseModel):
@@ -421,12 +485,24 @@ def studio_best_of_n(body: BestOfNIn):
         raise _studio_guard(e)
 
 
+@app.get("/api/studio/presets")
+def studio_presets():
+    """Training presets + clamp, so the UI shows the exact steps/lr/rank math."""
+    from . import studio
+
+    return {"presets": studio.LORA_PRESETS, "default": studio.DEFAULT_PRESET,
+            "default_max_images": studio.DEFAULT_MAX_IMAGES,
+            "steps_min": studio.STEPS_MIN, "steps_max": studio.STEPS_MAX}
+
+
 class TrainLoraIn(BaseModel):
     name: str = Field(min_length=1, max_length=80)
-    k: int = Field(default=40, ge=10, le=200)
-    steps: int = Field(default=1200, ge=50, le=4000)
-    rank: int = Field(default=16, ge=4, le=64)
-    lr: float = Field(default=1e-4, gt=0, le=1e-2)
+    max_images: int = Field(default=60, ge=10, le=200)
+    preset: str = Field(default="balanced", pattern="^(subtle|balanced|strong)$")
+    model: str | None = None
+    steps: int | None = Field(default=None, ge=200, le=6000)  # optional override
+    lr: float | None = Field(default=None, gt=0, le=1e-2)
+    rank: int | None = Field(default=None, ge=4, le=128)
 
 
 @app.post("/api/studio/train_lora")
@@ -434,7 +510,9 @@ def studio_train_lora(body: TrainLoraIn):
     from . import studio
 
     try:
-        return studio.train_taste_lora(body.name, body.k, body.steps, body.rank, body.lr)
+        return studio.train_taste_lora(body.name, max_images=body.max_images,
+                                       preset=body.preset, model=body.model,
+                                       steps=body.steps, lr=body.lr, rank=body.rank)
     except Exception as e:
         raise _studio_guard(e)
 
@@ -494,11 +572,13 @@ def studio_clusters(min_cluster_size: int = 10):
 
 class TrainClusterIn(BaseModel):
     name: str = Field(min_length=1, max_length=80)
-    image_ids: list[int] = Field(min_length=10, max_length=400)
-    steps: int = Field(default=1200, ge=50, le=4000)
-    rank: int = Field(default=16, ge=4, le=64)
+    image_ids: list[int] = Field(min_length=10, max_length=2000)
+    preset: str = Field(default="balanced", pattern="^(subtle|balanced|strong)$")
     model: str | None = None
     max_images: int = Field(default=60, ge=10, le=200)
+    steps: int | None = Field(default=None, ge=200, le=6000)
+    lr: float | None = Field(default=None, gt=0, le=1e-2)
+    rank: int | None = Field(default=None, ge=4, le=128)
 
 
 @app.post("/api/studio/train_cluster_lora")
@@ -506,9 +586,9 @@ def studio_train_cluster_lora(body: TrainClusterIn):
     from . import studio
 
     try:
-        return studio.submit_lora(body.name, body.image_ids, steps=body.steps,
-                                  rank=body.rank, model=body.model,
-                                  max_images=body.max_images)
+        return studio.submit_lora(body.name, body.image_ids, preset=body.preset,
+                                  model=body.model, max_images=body.max_images,
+                                  steps=body.steps, lr=body.lr, rank=body.rank)
     except Exception as e:
         raise _studio_guard(e)
 
@@ -607,9 +687,36 @@ def jobs_list():
     return {"items": jobs.list_jobs(), "active": jobs.active_count()}
 
 
+@app.get("/api/jobs/{job_id}")
+def jobs_get(job_id: int):
+    """One job's status + result, for clients polling a specific submission."""
+    job = jobs.get(job_id)
+    if job is None:
+        raise HTTPException(404, "no such job")
+    return job.as_dict()
+
+
 @app.post("/api/jobs/{job_id}/cancel")
 def jobs_cancel(job_id: int):
     return {"cancelled": jobs.cancel(job_id)}
+
+
+class DedupeIn(BaseModel):
+    # 0 = identical perceptual hash (true duplicates); higher = fuzzier.
+    phash_dist: int = Field(default=0, ge=0, le=8)
+
+
+@app.post("/api/dedupe")
+def dedupe_remove(body: DedupeIn):
+    """Find near-identical images and remove all but one per group (reversible
+    exclude; nothing deleted from disk). Runs as a background job."""
+    from . import dedupe
+
+    job = jobs.submit(
+        "dedupe", "removing duplicates",
+        lambda progress, cancel: dedupe.remove_duplicates(progress, cancel, body.phash_dist),
+    )
+    return {"started": True, "job_id": job.id}
 
 
 class IngestFolderIn(BaseModel):
@@ -752,8 +859,9 @@ def scan_results(scan_id: int | None = None, limit: int = 60, offset: int = 0):
 
 
 @app.get("/scan/img/{scan_id}/{rank}")
-def scan_image(scan_id: int, rank: int):
-    """Thumbnail of the rank-th image (score desc) in a persisted scan."""
+def scan_image(scan_id: int, rank: int, full: bool = False):
+    """The rank-th image (score desc) in a persisted scan — a 320px thumbnail
+    by default, or the full-resolution original with ?full=1 (for the lightbox)."""
     with conn() as db:
         row = db.execute(
             "SELECT path FROM scan_items WHERE scan_id = ?"
@@ -762,6 +870,8 @@ def scan_image(scan_id: int, rank: int):
         ).fetchone()
     if row is None or not os.path.isfile(row["path"]):
         raise HTTPException(404)
+    if full:
+        return FileResponse(row["path"])
     try:
         return FileResponse(_thumb_for(row["path"]), media_type="image/webp")
     except DECODE_ERRORS:
@@ -909,6 +1019,100 @@ def stats(session_id: int | None = None):
             out["session_count"] = row["n"]
             out["session_per_min"] = round(row["n"] / row["minutes"], 1) if row["minutes"] else None
         return out
+
+
+@app.get("/api/dashboard")
+def dashboard():
+    """Everything the Home page needs: collection counts, model status, and a
+    single state-driven 'next step' so the workflow is legible."""
+    from .scorer import latest_head
+
+    with conn() as db:
+        total = db.execute("SELECT count(*) AS n FROM images").fetchone()["n"]
+        by_value = {r["value"]: r["n"] for r in db.execute(
+            "SELECT value, count(*) AS n FROM current_labels WHERE kind='binary' GROUP BY value")}
+        excluded = db.execute(
+            "SELECT count(*) AS n FROM current_labels WHERE kind='exclude'").fetchone()["n"]
+        labeled_any = db.execute(
+            "SELECT count(DISTINCT image_id) AS n FROM current_labels"
+            " WHERE kind IN ('binary','exclude')").fetchone()["n"]
+        n_sources = db.execute(
+            "SELECT count(DISTINCT location) AS n FROM image_sources WHERE kind='local'"
+        ).fetchone()["n"]
+        styles = {r["style"]: r["n"] for r in db.execute(
+            "SELECT style, count(*) AS n FROM image_styles GROUP BY style")}
+        # one model per style
+        models = {}
+        for st in ("anime", "realistic"):
+            h = latest_head(st)
+            if not h:
+                continue
+            m = h.get("metrics", {})
+            ls = db.execute(
+                "SELECT count(*) AS n FROM labels l"
+                " JOIN image_styles s ON s.image_id = l.image_id AND s.style = ?"
+                " WHERE l.source='manual' AND l.kind='binary' AND l.created_at > ?",
+                (st, h["trained_at"])).fetchone()["n"]
+            models[st] = {"name": h["name"], "trained_at": h["trained_at"],
+                          "val_accuracy": m.get("val_accuracy"), "val_auc": m.get("val_auc"),
+                          "labels_since": ls}
+
+    liked = by_value.get(1.0, 0)
+    collection = {
+        "total": total, "liked": liked, "maybe": by_value.get(0.5, 0),
+        "disliked": by_value.get(0.0, 0), "excluded": excluded,
+        "unlabeled": total - labeled_any, "sources": n_sources,
+        "anime": styles.get("anime", 0), "realistic": styles.get("realistic", 0),
+    }
+    labeled = total - collection["unlabeled"]
+    # for the suggested action: most "stale" model (most new labels since train)
+    labels_since = max((mm["labels_since"] for mm in models.values()), default=0)
+    has_model = bool(models)
+
+    # one suggested next action, by state
+    if total == 0:
+        nxt = {"action": "add", "label": "Add a folder of images to begin"}
+    elif labeled < 50:
+        nxt = {"action": "nav", "href": "/static/index.html",
+               "label": f"Rate {50 - labeled} more images to unlock training"}
+    elif not has_model:
+        nxt = {"action": "train", "label": "Train your taste models"}
+    elif labels_since >= 50:
+        nxt = {"action": "train", "label": f"{labels_since} new ratings since last train — retrain"}
+    elif liked >= 6:
+        nxt = {"action": "nav", "href": "/static/tournament.html",
+               "label": "Rank your favorites in a tournament"}
+    else:
+        nxt = {"action": "nav", "href": "/static/index.html", "label": "Keep rating"}
+    return {"collection": collection, "models": models, "next": nxt}
+
+
+@app.get("/api/styles")
+def styles_counts():
+    from . import styles
+    return styles.counts()
+
+
+@app.post("/api/styles/classify")
+def styles_classify():
+    from . import styles
+    job = jobs.submit("classify", "style tagging",
+                      lambda progress, cancel: styles.classify_styles(progress, cancel))
+    return {"started": True, "job_id": job.id}
+
+
+class SetStyleIn(BaseModel):
+    image_ids: list[int] = Field(min_length=1, max_length=2000)
+    style: str = Field(pattern="^(anime|realistic)$")
+
+
+@app.post("/api/styles/set")
+def styles_set(body: SetStyleIn):
+    from . import styles
+
+    with conn() as db:
+        _require_images(db, body.image_ids)
+    return {"updated": styles.set_style(body.image_ids, body.style)}
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

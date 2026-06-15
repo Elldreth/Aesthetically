@@ -20,6 +20,12 @@
   .cell img { width: 100%; height: 100%; object-fit: contain; display: block; }
   .cell .num { position: absolute; left: 8px; top: 8px; background: rgba(0,0,0,.7);
                border-radius: var(--radius-sm); padding: 2px 9px; font-size: 13px; font-weight: 600; }
+  .cell .retag { position: absolute; right: 8px; top: 8px; opacity: 0; transition: opacity .12s;
+                 background: rgba(12,14,19,.78); border: 1px solid var(--border-bright);
+                 color: var(--text); border-radius: var(--radius-sm); padding: 3px 9px;
+                 font: 500 12px/1 var(--font); cursor: pointer; }
+  .cell:hover .retag, .cell .retag:focus-visible { opacity: 1; }
+  .cell .retag:hover { background: var(--surface-2); }
   .cell.winner { outline-color: var(--yay); animation: win-pulse .25s ease-out; }
   @keyframes win-pulse {
     0% { outline-color: transparent; }
@@ -30,6 +36,10 @@
 </head>
 <body>
   <div id="top">
+    <select id="tour-style" aria-label="Style to rank" title="Rank within one style">
+      <option value="anime">anime</option>
+      <option value="realistic">realistic</option>
+    </select>
     <span id="hint">click the <b>best</b> image (or press its number) — every click ranks it above the other five</span>
     <button class="btn btn-quiet" id="b-skip">skip this set</button>
     <span id="counters">
@@ -47,12 +57,35 @@ helpOverlay([
 ]);
 
 const SIZE = 6;
-let sessionId = null, items = [], votes = 0, voting = false;
+let sessionId = null, items = [], votes = 0, voting = false, currentStyle = 'anime';
 const $ = id => document.getElementById(id);
 const delay = ms => new Promise(r => setTimeout(r, ms));
+const otherStyle = () => currentStyle === 'anime' ? 'realistic' : 'anime';
+
+function renumber() {
+  document.querySelectorAll('#board .cell .num').forEach((el, i) => el.textContent = i + 1);
+}
+
+function addCell(it) {
+  const c = document.createElement('div');
+  c.className = 'cell'; c.dataset.id = it.id;
+  const img = document.createElement('img');
+  img.src = '/img/' + it.id; img.alt = 'image ' + it.id;
+  const num = document.createElement('span');
+  num.className = 'num';
+  const tag = document.createElement('button');
+  tag.className = 'retag';
+  tag.textContent = '→ ' + otherStyle();
+  tag.title = `Wrong style — tag as ${otherStyle()} and swap in another ${currentStyle}`;
+  tag.addEventListener('click', (e) => { e.stopPropagation(); retag(it, c); });
+  c.append(img, num, tag);
+  c.addEventListener('click', () => vote(it.id, c));
+  $('board').appendChild(c);
+}
 
 async function load() {
-  const data = await api('/api/tournament?size=' + SIZE);
+  currentStyle = $('tour-style').value;
+  const data = await api(`/api/tournament?size=${SIZE}&style=${currentStyle}`);
   items = data.items;
   const b = $('board');
   b.textContent = '';
@@ -60,9 +93,9 @@ async function load() {
     const empty = document.createElement('div');
     empty.className = 'empty-state';
     const h = document.createElement('h2');
-    h.textContent = 'Not enough liked images';
+    h.textContent = `Not enough liked ${currentStyle} images`;
     const p = document.createElement('p');
-    p.textContent = 'The tournament ranks the images you already like — it needs at least 2 of them. Rate some images first.';
+    p.textContent = `The tournament ranks ${currentStyle} images you already like — it needs at least 2. Rate more ${currentStyle} images, or switch style above.`;
     const cta = document.createElement('a');
     cta.className = 'btn btn-primary';
     cta.href = '/';
@@ -71,19 +104,23 @@ async function load() {
     b.appendChild(empty);
     return;
   }
-  items.forEach((it, n) => {
-    const c = document.createElement('div');
-    c.className = 'cell';
-    const img = document.createElement('img');
-    img.src = '/img/' + it.id;
-    img.alt = 'image ' + it.id;
-    const num = document.createElement('span');
-    num.className = 'num';
-    num.textContent = n + 1;
-    c.append(img, num);
-    c.addEventListener('click', () => vote(it.id, c));
-    b.appendChild(c);
-  });
+  items.forEach(addCell);
+  renumber();
+}
+
+async function retag(it, cell) {
+  try {
+    await api('/api/styles/set', {image_ids: [it.id], style: otherStyle()});
+  } catch (e) { toast('Re-tag failed: ' + e.message); return; }
+  toast(`Tagged as ${otherStyle()}`);
+  items = items.filter(x => x.id !== it.id);
+  cell.remove();
+  try {
+    const repl = await api(`/api/tournament?size=1&style=${currentStyle}` +
+      `&exclude=${items.map(i => i.id).join(',')}`);
+    if (repl.items.length) { items.push(repl.items[0]); addCell(repl.items[0]); }
+  } catch (e) { /* no replacement available — screen just has fewer */ }
+  renumber();
 }
 
 async function vote(winnerId, cell) {
@@ -112,6 +149,11 @@ async function vote(winnerId, cell) {
 }
 
 $('b-skip').addEventListener('click', () => load());
+$('tour-style').addEventListener('change', () => {
+  localStorage.setItem('tourStyle', $('tour-style').value);
+  votes = 0; $('b-screens').textContent = 'screens: 0';
+  load();
+});
 
 document.addEventListener('keydown', e => {
   if (helpOverlayOpen()) return;
@@ -121,6 +163,8 @@ document.addEventListener('keydown', e => {
 });
 
 (async () => {
+  const saved = localStorage.getItem('tourStyle');
+  if (saved === 'anime' || saved === 'realistic') $('tour-style').value = saved;
   sessionId = (await api('/api/sessions', {name: 'tournament'})).session_id;
   try {
     const rk = await api('/api/rankings?limit=1');

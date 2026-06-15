@@ -101,3 +101,75 @@ def test_ingest_endpoint_dedup_and_label(client):
     assert r1["image_id"] == r2["image_id"]
     bad = client.post("/api/ingest", json={"data_b64": base64.b64encode(b"junk").decode()})
     assert bad.status_code == 422
+
+
+def _patterned_png(path, seed):
+    """A textured (non-flat) PNG so phash discriminates — flat colors all hash
+    to the same value and would falsely group as duplicates."""
+    import numpy as np
+    from PIL import Image
+
+    rng = np.random.default_rng(seed)
+    arr = rng.integers(0, 256, size=(64, 64, 3), dtype=np.uint8)
+    Image.fromarray(arr, "RGB").save(path)
+
+
+def test_remove_duplicates_excludes_non_canonical(tmp_db, tmp_path):
+    from app import dedupe
+
+    a, b, c = (tmp_path / "a.png", tmp_path / "b.png", tmp_path / "c.png")
+    _patterned_png(a, 1)
+    _patterned_png(b, 1)   # byte-identical content -> identical phash
+    _patterned_png(c, 99)  # distinct texture -> different phash
+
+    db = get_conn()
+    ia = add_image(db, "1", path=str(a))
+    ib = add_image(db, "2", path=str(b))
+    add_image(db, "3", path=str(c))
+    db.commit()
+    db.close()
+
+    out = dedupe.remove_duplicates(phash_dist=0)
+    assert out["groups"] == 1
+    assert out["removed"] == 1
+    assert out["removed_ids"] == [ib]  # canonical is the lowest id (ia); ib removed
+
+    db = get_conn()
+    excluded = {r["image_id"] for r in db.execute(
+        "SELECT image_id FROM current_labels WHERE kind='exclude' AND value=1")}
+    db.close()
+    assert excluded == {ib}
+
+    # Idempotent: re-running removes nothing new (ib already excluded).
+    again = dedupe.remove_duplicates(phash_dist=0)
+    assert again["removed"] == 0 and again["groups"] == 1
+
+
+def test_remove_duplicates_keeps_a_surviving_copy(tmp_db, tmp_path):
+    """If the lowest-id member was already removed, the keeper falls through to
+    the next surviving copy — the group must never be fully excluded."""
+    from app import dedupe
+
+    a, b, c = (tmp_path / "a.png", tmp_path / "b.png", tmp_path / "c.png")
+    _patterned_png(a, 7)
+    _patterned_png(b, 7)
+    _patterned_png(c, 7)  # three identical copies
+
+    db = get_conn()
+    ia = add_image(db, "1", path=str(a))
+    ib = add_image(db, "2", path=str(b))
+    ic = add_image(db, "3", path=str(c))
+    # ia (lowest id) is already removed, e.g. manually.
+    db.execute("INSERT INTO labels (image_id, kind, value, source)"
+               " VALUES (?, 'exclude', 1, 'manual')", (ia,))
+    db.commit()
+    db.close()
+
+    out = dedupe.remove_duplicates(phash_dist=0)
+    assert out["removed_ids"] == [ic]  # keep ib (lowest survivor), remove ic
+
+    db = get_conn()
+    excluded = {r["image_id"] for r in db.execute(
+        "SELECT image_id FROM current_labels WHERE kind='exclude' AND value=1")}
+    db.close()
+    assert excluded == {ia, ic}  # ib survives — group is not wiped out

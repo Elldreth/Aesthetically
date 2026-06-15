@@ -90,6 +90,18 @@ CREATE TABLE IF NOT EXISTS near_dups (
   PRIMARY KEY (image_id)
 );
 
+-- Per-image style tag (anime vs realistic). Auto-assigned from the SigLIP
+-- anime↔realistic axis, then optionally corrected by hand; a 'manual' row is
+-- never overwritten by re-classification. Enables per-style rating + models.
+CREATE TABLE IF NOT EXISTS image_styles (
+  image_id INTEGER PRIMARY KEY REFERENCES images(id),
+  style TEXT NOT NULL,                    -- 'anime' | 'realistic'
+  source TEXT NOT NULL DEFAULT 'auto',    -- 'auto' | 'manual'
+  margin REAL,                            -- |axis score|; auto-tag confidence
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_image_styles_style ON image_styles(style);
+
 -- "Score folder" (ephemeral prediction) persistence — kept entirely separate
 -- from the training collection (images/labels). Embeddings are cached by file
 -- content hash so re-scoring a folder is instant and a new taste model can
