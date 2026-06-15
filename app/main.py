@@ -518,6 +518,25 @@ class TrainLoraIn(BaseModel):
     rank: int | None = Field(default=None, ge=4, le=128)
 
 
+@app.get("/api/studio/dataset_preview")
+def studio_dataset_preview(style: str | None = None, max_images: int = 60,
+                           hand_filter: str | None = None):
+    """The exact images build_taste_dataset would train on, for a preview grid."""
+    from . import studio
+
+    st = None if style in (None, "all") else style
+    if st is not None and st not in ("anime", "realistic"):
+        raise HTTPException(422, "style must be anime, realistic, or all")
+    hf = hand_filter if hand_filter in ("good", "not_bad") else None
+    try:
+        ds = studio.build_taste_dataset(max(10, min(max_images, 200)), style=st, hand_filter=hf)
+    except Exception as e:
+        raise _studio_guard(e)
+    items = sorted(ds, key=lambda c: (c.get("taste") or 0), reverse=True)
+    return {"count": len(items),
+            "items": [{"id": c["id"], "taste": c.get("taste")} for c in items]}
+
+
 @app.post("/api/studio/train_lora")
 def studio_train_lora(body: TrainLoraIn):
     from . import studio

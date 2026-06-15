@@ -72,6 +72,7 @@
       <label class="dim">base model <select id="lora-model" aria-label="Base checkpoint to train against"></select></label>
       <label class="dim">strength <select id="lora-preset" aria-label="Training preset"></select></label>
       <button class="btn btn-primary" id="b-train">Train</button>
+      <button class="btn" id="b-preview" title="See the exact images this dataset will use">Preview</button>
       <button class="btn" id="b-eval" title="probe-prompt eval of the latest completed run">Eval latest run</button>
       <span class="badge" id="train-status" hidden></span>
     </div>
@@ -83,6 +84,8 @@
       <label class="dim">rank <input id="lora-rank" type="number" min="4" max="128" step="4" placeholder="preset" aria-label="Override rank"></label>
       <button class="btn" id="b-reset-adv" type="button" title="Clear overrides and use the preset">Reset</button>
     </div>
+    <p class="dim" id="preview-head" style="margin:10px 0 4px" hidden></p>
+    <div id="lora-preview" hidden></div>
     <table id="runs">
       <thead><tr><th>run</th><th>name</th><th>status</th><th>dataset</th><th>artifact</th></tr></thead>
       <tbody></tbody>
@@ -110,6 +113,12 @@
   .cluster-head { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
   .cluster-thumbs { display: flex; gap: 4px; }
   .cluster-thumbs img { width: 64px; height: 64px; object-fit: cover; border-radius: var(--radius-sm); }
+  #lora-preview { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+    gap: 6px; max-height: 420px; overflow-y: auto; padding: 4px; }
+  #lora-preview .pcell { position: relative; aspect-ratio: 1; cursor: pointer; }
+  #lora-preview .pcell img { width: 100%; height: 100%; object-fit: cover; border-radius: var(--radius-sm); display: block; }
+  #lora-preview .pcell .ps { position: absolute; left: 3px; top: 3px; background: rgba(0,0,0,.65);
+    border-radius: var(--radius-sm); padding: 0 5px; font-size: 11px; font-variant-numeric: tabular-nums; }
   .cluster-head input { width: 150px; }
 </style>
 <script src="/static/app.js"></script>
@@ -317,6 +326,39 @@ $('b-train').addEventListener('click', async () => {
     toast('Training failed: ' + e.message);
   }
   $('b-train').disabled = false; loadRuns();
+});
+
+$('b-preview').addEventListener('click', async () => {
+  const btn = $('b-preview'), head = $('preview-head'), grid = $('lora-preview');
+  btn.disabled = true; head.hidden = false; grid.hidden = false;
+  head.textContent = 'Loading preview…'; grid.textContent = '';
+  try {
+    const params = new URLSearchParams({style: $('lora-style').value, max_images: +$('lora-k').value});
+    if ($('lora-hands').value) params.set('hand_filter', $('lora-hands').value);
+    const r = await api('/api/studio/dataset_preview?' + params);
+    if (!r.count) { head.textContent = 'No images match these settings.'; return; }
+    head.textContent = `${r.count} images in this dataset (highest taste first — click to enlarge)`;
+    const entries = r.items.map(it => ({
+      url: '/img/' + it.id,
+      label: 'image ' + it.id + (it.taste != null ? ' · taste ' + it.taste.toFixed(2) : ''),
+    }));
+    r.items.forEach((it, i) => {
+      const cell = document.createElement('div');
+      cell.className = 'pcell';
+      const img = document.createElement('img');
+      img.loading = 'lazy'; img.src = '/thumb/' + it.id; img.alt = 'image ' + it.id;
+      cell.appendChild(img);
+      if (it.taste != null) {
+        const s = document.createElement('span');
+        s.className = 'ps'; s.textContent = it.taste.toFixed(2);
+        cell.appendChild(s);
+      }
+      cell.addEventListener('click', () => lightbox(entries, i));
+      grid.appendChild(cell);
+    });
+  } catch (e) {
+    head.textContent = 'Preview failed: ' + e.message;
+  } finally { btn.disabled = false; }
 });
 
 let lastPollState = null;
