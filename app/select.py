@@ -19,10 +19,26 @@ from pathlib import Path
 from .db import get_conn
 
 
-def _candidates(db, unlabeled_only: bool) -> list[dict]:
+def hand_clause(hand_filter: str | None, alias: str = "i") -> str:
+    """SQL fragment for a hand-quality filter on image `alias`.
+    'good' = only images tagged good hands; 'not_bad' = exclude tagged bad."""
+    if hand_filter == "good":
+        return (f" AND EXISTS (SELECT 1 FROM hand_labels hl"
+                f" WHERE hl.image_id = {alias}.id AND hl.label = 1)")
+    if hand_filter == "not_bad":
+        return (f" AND NOT EXISTS (SELECT 1 FROM hand_labels hl"
+                f" WHERE hl.image_id = {alias}.id AND hl.label = 0)")
+    return ""
+
+
+def _candidates(db, unlabeled_only: bool, style: str | None = None,
+                hand_filter: str | None = None) -> list[dict]:
     label_filter = """AND NOT EXISTS (SELECT 1 FROM current_labels c
                        WHERE c.image_id = i.id AND c.kind IN ('binary','exclude'))""" \
         if unlabeled_only else ""
+    style_filter = (" AND EXISTS (SELECT 1 FROM image_styles st"
+                    " WHERE st.image_id = i.id AND st.style = ?)") if style else ""
+    params = (style,) if style else ()
     rows = db.execute(f"""
         SELECT i.id, p.score,
                (SELECT location FROM image_sources s WHERE s.image_id = i.id
@@ -30,8 +46,8 @@ def _candidates(db, unlabeled_only: bool) -> list[dict]:
         FROM images i
         JOIN predictions p ON p.image_id = i.id AND p.model LIKE 'taste:%'
         WHERE NOT EXISTS (SELECT 1 FROM near_dups d WHERE d.image_id = i.id)
-        {label_filter}
-        ORDER BY p.score DESC""").fetchall()
+        {label_filter}{style_filter}{hand_clause(hand_filter)}
+        ORDER BY p.score DESC""", params).fetchall()
     return [dict(r) for r in rows if r["path"] and os.path.isfile(r["path"])]
 
 
@@ -52,11 +68,12 @@ def _transfer(src: str, dst: Path, mode: str) -> None:
 
 def run_select(out: Path, *, top: int | None = None, min_score: float | None = None,
                buckets: bool = False, unlabeled_only: bool = False,
+               style: str | None = None, hand_filter: str | None = None,
                mode: str = "copy", progress: dict | None = None) -> dict:
     """Shared by the CLI and the web UI. Returns a summary dict."""
     progress = progress if progress is not None else {}
     db = get_conn()
-    cands = _candidates(db, unlabeled_only)
+    cands = _candidates(db, unlabeled_only, style=style, hand_filter=hand_filter)
     db.close()
     if top:
         cands = cands[:top]

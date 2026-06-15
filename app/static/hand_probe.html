@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hand quality — labeling</title>
+<link rel="stylesheet" href="/static/app.css">
+<style>
+  body { max-width: 1100px; margin: 0 auto; padding: 20px; }
+  #top { position: sticky; top: 0; z-index: 5; background: var(--bg);
+         padding: 10px 0; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+         border-bottom: 1px solid var(--border); }
+  #grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+          gap: 8px; margin-top: 14px; }
+  .cell { position: relative; aspect-ratio: 1; background: #111; border-radius: var(--radius-sm);
+          overflow: hidden; cursor: pointer; border: 3px solid transparent; }
+  .cell img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .cell.sel { outline: 3px solid var(--accent); outline-offset: -3px; }
+  .cell.good { border-color: #5ec48d; }
+  .cell.bad  { border-color: #e2606a; }
+  .cell .tag { position: absolute; top: 3px; left: 3px; font-size: 11px; padding: 0 5px;
+               border-radius: 4px; background: rgba(0,0,0,.6); }
+  .cell .zoom { position: absolute; bottom: 3px; right: 3px; background: rgba(0,0,0,.6);
+                border: none; color: #fff; border-radius: 4px; cursor: pointer; font-size: 13px;
+                width: 24px; height: 24px; }
+  .stat { font-variant-numeric: tabular-nums; }
+  /* detail overlay */
+  #lb { position: fixed; inset: 0; background: rgba(0,0,0,.9); z-index: 20;
+        display: none; flex-direction: column; align-items: center; justify-content: center; gap: 12px; }
+  #lb.open { display: flex; }
+  #lbwrap { position: relative; max-width: 88vw; max-height: 76vh; }
+  #lbimg { max-width: 88vw; max-height: 76vh; display: block; border-radius: var(--radius); }
+  .hbox { position: absolute; border: 2px solid #ffd34e; box-shadow: 0 0 0 9999px rgba(0,0,0,.12) inset; border-radius: 4px; }
+  .hbox span { position: absolute; top: -18px; left: 0; font-size: 11px; color: #ffd34e; background: rgba(0,0,0,.6); padding: 0 4px; }
+  kbd { background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; font-size: 12px; }
+</style>
+</head>
+<body>
+  <h1 style="margin:.2em 0">Hand quality — labeling</h1>
+  <p class="dim" style="margin:.2em 0 0">Tag each image by its <b>hands</b>: Good = anatomically fine,
+     Bad = wrong (extra/fused/melted fingers). The yellow box marks where a hand was detected.
+     <b>Bulk:</b> click cells to select, then a Good/Bad button — handy for real photos.
+     <b>Detail:</b> click ⤢ to see the full image; <kbd>F</kbd>/<kbd>J</kbd>/<kbd>Space</kbd>/<kbd>←</kbd><kbd>→</kbd>.</p>
+  <div id="top">
+    <select id="style" aria-label="style filter">
+      <option value="all">all styles</option>
+      <option value="anime">anime</option>
+      <option value="realistic">realistic</option>
+    </select>
+    <select id="show" aria-label="which images" title="filter by label state">
+      <option value="all">all</option>
+      <option value="unlabeled">unlabeled</option>
+      <option value="good">good</option>
+      <option value="bad">bad</option>
+    </select>
+    <button class="btn" id="b-selall">Select all</button>
+    <button class="btn" id="b-clearsel">Clear selection</button>
+    <span class="sep" style="width:1px;height:20px;background:var(--border)"></span>
+    <button class="btn btn-yay" id="b-good">✓ Good hands</button>
+    <button class="btn btn-nay" id="b-bad">✗ Bad hands</button>
+    <button class="btn" id="b-clear">Clear label</button>
+    <span class="dim stat" id="counts" style="margin-left:auto"></span>
+  </div>
+  <div id="grid"></div>
+
+  <div id="lb" role="dialog" aria-modal="true">
+    <div id="lbwrap"><img id="lbimg" alt="full image"></div>
+    <div style="display:flex; gap:10px; align-items:center">
+      <button class="btn" id="lb-prev">◀</button>
+      <button class="btn btn-nay" id="lb-bad">Bad <kbd>J</kbd></button>
+      <button class="btn" id="lb-skip">Skip <kbd>␣</kbd></button>
+      <button class="btn btn-yay" id="lb-good">Good <kbd>F</kbd></button>
+      <button class="btn" id="lb-next">▶</button>
+      <button class="btn" id="lb-close">Close <kbd>Esc</kbd></button>
+    </div>
+    <p class="dim" id="lb-meta"></p>
+  </div>
+<script>
+const $ = id => document.getElementById(id);
+const token = (document.cookie.match(/aesth_token=([^;]+)/) || [])[1] || '';
+let images = [], labels = {}, sel = new Set(), view = [], lbIdx = -1;
+let saveTimer = null;
+
+function saveSoon() {
+  localStorage.setItem('handLabels', JSON.stringify(labels));
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(async () => {
+    try {
+      await fetch('/api/hand_probe/labels', {method: 'POST',
+        headers: {'Content-Type': 'application/json', 'X-Aesth-Token': token},
+        body: JSON.stringify({labels})});
+    } catch (e) {}
+  }, 400);
+}
+
+function counts() {
+  const vals = Object.values(labels);
+  const g = vals.filter(v => v === 'good').length, b = vals.filter(v => v === 'bad').length;
+  $('counts').textContent = `${g + b} labeled · ${g} good · ${b} bad · ${sel.size} selected · ${images.length} images with hands`;
+}
+
+function passesFilter(im) {
+  if ($('style').value !== 'all' && im.style !== $('style').value) return false;
+  const lab = labels[im.id];
+  const s = $('show').value;
+  if (s === 'unlabeled') return !lab;
+  if (s === 'good' || s === 'bad') return lab === s;
+  return true;
+}
+
+function render() {
+  view = images.filter(passesFilter);
+  const g = $('grid');
+  g.textContent = '';
+  for (const im of view) {
+    const cell = document.createElement('div');
+    cell.className = 'cell' + (sel.has(im.id) ? ' sel' : '') + (labels[im.id] ? ' ' + labels[im.id] : '');
+    cell.dataset.id = im.id;
+    const img = document.createElement('img');
+    img.loading = 'lazy'; img.src = '/thumb/' + im.id; img.alt = 'image ' + im.id;
+    const tag = document.createElement('span'); tag.className = 'tag'; tag.textContent = im.style[0].toUpperCase();
+    const zoom = document.createElement('button'); zoom.className = 'zoom'; zoom.textContent = '⤢';
+    zoom.title = 'See full image';
+    zoom.onclick = e => { e.stopPropagation(); openLb(view.indexOf(im)); };
+    cell.append(img, tag, zoom);
+    cell.onclick = () => { sel.has(im.id) ? sel.delete(im.id) : sel.add(im.id); cell.classList.toggle('sel'); counts(); };
+    g.appendChild(cell);
+  }
+  counts();
+}
+
+function apply(value) {              // value: 'good' | 'bad' | null (clear)
+  if (!sel.size) return;
+  for (const id of sel) { if (value) labels[id] = value; else delete labels[id]; }
+  sel.clear(); saveSoon(); render();
+}
+
+// ---- detail overlay ----
+function openLb(i) {
+  if (i < 0 || i >= view.length) return;
+  lbIdx = i;
+  const im = view[i];
+  const img = $('lbimg');
+  img.onload = () => drawBoxes(im);
+  img.src = '/img/' + im.id;
+  $('lb-meta').textContent = `image ${im.id} · ${im.style} · ${im.boxes.length} hand(s) · ${labelTxt(im.id)}`;
+  $('lb').classList.add('open');
+}
+function labelTxt(id) { return labels[id] ? labels[id].toUpperCase() : 'unlabeled'; }
+function drawBoxes(im) {
+  const wrap = $('lbwrap');
+  wrap.querySelectorAll('.hbox').forEach(b => b.remove());
+  const img = $('lbimg');
+  const sx = img.clientWidth / img.naturalWidth, sy = img.clientHeight / img.naturalHeight;
+  for (const [x1, y1, x2, y2] of im.boxes) {
+    const d = document.createElement('div'); d.className = 'hbox';
+    d.style.left = (x1 * sx) + 'px'; d.style.top = (y1 * sy) + 'px';
+    d.style.width = ((x2 - x1) * sx) + 'px'; d.style.height = ((y2 - y1) * sy) + 'px';
+    wrap.appendChild(d);
+  }
+}
+function lbLabel(v) {
+  const im = view[lbIdx];
+  if (v) labels[im.id] = v; else delete labels[im.id];
+  saveSoon();
+  // update underlying cell without full re-render
+  const cell = $('grid').querySelector(`.cell[data-id="${im.id}"]`);
+  if (cell) cell.className = 'cell' + (sel.has(im.id) ? ' sel' : '') + (labels[im.id] ? ' ' + labels[im.id] : '');
+  counts();
+  if (lbIdx + 1 < view.length) openLb(lbIdx + 1); else closeLb();
+}
+function closeLb() { $('lb').classList.remove('open'); lbIdx = -1; }
+
+$('b-good').onclick = () => apply('good');
+$('b-bad').onclick = () => apply('bad');
+$('b-clear').onclick = () => apply(null);
+$('b-selall').onclick = () => { view.forEach(im => sel.add(im.id)); render(); };
+$('b-clearsel').onclick = () => { sel.clear(); render(); };
+$('style').onchange = render; $('show').onchange = render;
+$('lb-good').onclick = () => lbLabel('good');
+$('lb-bad').onclick = () => lbLabel('bad');
+$('lb-skip').onclick = () => (lbIdx + 1 < view.length ? openLb(lbIdx + 1) : closeLb());
+$('lb-prev').onclick = () => openLb(lbIdx - 1);
+$('lb-next').onclick = () => openLb(lbIdx + 1);
+$('lb-close').onclick = closeLb;
+window.addEventListener('resize', () => { if (lbIdx >= 0) drawBoxes(view[lbIdx]); });
+document.addEventListener('keydown', e => {
+  if (lbIdx < 0) return;
+  if (e.key === 'f' || e.key === 'F') lbLabel('good');
+  else if (e.key === 'j' || e.key === 'J') lbLabel('bad');
+  else if (e.key === ' ') { e.preventDefault(); $('lb-skip').click(); }
+  else if (e.key === 'ArrowRight') openLb(lbIdx + 1);
+  else if (e.key === 'ArrowLeft') openLb(lbIdx - 1);
+  else if (e.key === 'Escape') closeLb();
+});
+
+(async () => {
+  const manifest = await (await fetch('/hand_probe/manifest.json')).json();
+  // group crops → one entry per source image, collecting hand boxes
+  const byImg = new Map();
+  for (const m of manifest) {
+    if (!byImg.has(m.image_id)) byImg.set(m.image_id, {id: m.image_id, style: m.style, boxes: []});
+    byImg.get(m.image_id).boxes.push(m.box);
+  }
+  images = [...byImg.values()];
+  try { labels = (await (await fetch('/api/hand_probe/labels')).json()).labels || {}; }
+  catch { labels = JSON.parse(localStorage.getItem('handLabels') || '{}'); }
+  render();
+})();
+</script>
+</body>
+</html>

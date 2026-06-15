@@ -168,16 +168,30 @@ def liked_counts() -> dict:
             " WHERE NOT EXISTS (SELECT 1 FROM near_dups d WHERE d.image_id = i.id)"
             " GROUP BY ist.style").fetchall()}
         total = db.execute(f"SELECT count(*) AS n {base}").fetchone()["n"]
-    return {"anime": by.get("anime", 0), "realistic": by.get("realistic", 0), "all": total}
+        # liked-anime pools under each hand filter, for the training readout
+        from .select import hand_clause
+        anime_base = (
+            "FROM images i"
+            " JOIN current_labels c ON c.image_id = i.id AND c.kind='binary' AND c.value=1.0"
+            " JOIN image_styles ist ON ist.image_id = i.id AND ist.style='anime'"
+            " WHERE NOT EXISTS (SELECT 1 FROM near_dups d WHERE d.image_id = i.id)")
+        good = db.execute(f"SELECT count(*) AS n {anime_base}{hand_clause('good')}").fetchone()["n"]
+        not_bad = db.execute(f"SELECT count(*) AS n {anime_base}{hand_clause('not_bad')}").fetchone()["n"]
+    return {"anime": by.get("anime", 0), "realistic": by.get("realistic", 0), "all": total,
+            "anime_good_hands": good, "anime_not_bad_hands": not_bad}
 
 
-def build_taste_dataset(k: int = 40, style: str | None = None) -> list[dict]:
+def build_taste_dataset(k: int = 40, style: str | None = None,
+                        hand_filter: str | None = None) -> list[dict]:
     """Pick the k best-loved, maximally diverse images for a style LoRA.
 
     With ``style`` ('anime'/'realistic'), the dataset is restricted to images
-    tagged that style — so an anime LoRA trains on anime likes only. Ranking:
-    Bradley-Terry strength when pairwise votes exist, else taste score, else
-    recency. Diversity: greedy max-min in SigLIP space."""
+    tagged that style. ``hand_filter`` ('good' = only good-hands-tagged,
+    'not_bad' = exclude bad-hands-tagged) keeps bad hands out of the LoRA.
+    Ranking: Bradley-Terry strength when pairwise votes exist, else taste score,
+    else recency. Diversity: greedy max-min in SigLIP space."""
+    from .select import hand_clause
+
     style_join = ("JOIN image_styles ist ON ist.image_id = i.id AND ist.style = ?"
                   if style in ("anime", "realistic") else "")
     params = (style,) if style_join else ()
@@ -195,7 +209,8 @@ def build_taste_dataset(k: int = 40, style: str | None = None) -> list[dict]:
                FROM images i
                JOIN current_labels c ON c.image_id = i.id AND c.kind = 'binary' AND c.value = 1.0
                {style_join}
-               WHERE NOT EXISTS (SELECT 1 FROM near_dups d WHERE d.image_id = i.id)""",
+               WHERE NOT EXISTS (SELECT 1 FROM near_dups d WHERE d.image_id = i.id)
+               {hand_clause(hand_filter)}""",
             params,
         ).fetchall()
         cands = [dict(r) for r in rows if r["path"]]
@@ -286,14 +301,16 @@ def submit_lora(name: str, image_ids: list[int], *, preset: str = DEFAULT_PRESET
 
 def train_taste_lora(name: str, max_images: int = DEFAULT_MAX_IMAGES,
                      preset: str = DEFAULT_PRESET, model: str | None = None,
-                     style: str | None = None, steps: int | None = None,
-                     lr: float | None = None, rank: int | None = None,
+                     style: str | None = None, hand_filter: str | None = None,
+                     steps: int | None = None, lr: float | None = None,
+                     rank: int | None = None,
                      client: ArtifexClient | None = None) -> dict:
     """Submit a taste-LoRA job from the curated dataset for a style.
 
     ``style`` restricts the dataset to that style's likes and, when ``model`` is
-    not given, selects the matching base checkpoint (anime → hoseki, etc.)."""
-    dataset = build_taste_dataset(max_images, style=style)
+    not given, selects the matching base checkpoint (anime → hoseki, etc.).
+    ``hand_filter`` keeps bad-hands images out (see build_taste_dataset)."""
+    dataset = build_taste_dataset(max_images, style=style, hand_filter=hand_filter)
     if len(dataset) < 10:
         scope = f" {style}" if style in ("anime", "realistic") else ""
         raise RuntimeError(

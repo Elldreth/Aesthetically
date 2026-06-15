@@ -11,6 +11,9 @@ transformers>=4.49
 scikit-learn>=1.4
 numpy>=1.26
 imagehash>=4.3
+# anime hand detection for the hand-quality score (CPU inference); needs the
+# anime YOLO seg model at ANIME_HAND_MODEL (defaults to the Artifex models dir).
+ultralytics>=8.3
 
 # dev
 pytest>=8.0

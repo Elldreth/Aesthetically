@@ -29,6 +29,10 @@
   .cell .score { position: absolute; left: 4px; top: 4px; background: rgba(0,0,0,.65);
                  border-radius: var(--radius-sm); padding: 1px 6px; font-size: 12px;
                  font-variant-numeric: tabular-nums; }
+  .cell .hand-score { position: absolute; right: 4px; top: 4px; background: rgba(0,0,0,.65);
+                 border-radius: var(--radius-sm); padding: 1px 5px; font-size: 12px;
+                 font-variant-numeric: tabular-nums; }
+  .cell .hand-score.bad { background: rgba(226,96,106,.85); color: #fff; }
   #grid .empty-state { grid-column: 1 / -1; }
 </style>
 </head>
@@ -41,12 +45,14 @@
         <option value="maybe">maybe</option>
         <option value="disliked">disliked</option>
         <option value="removed">removed</option>
+        <option value="bad_hands">likely bad hands</option>
         <option value="all">everything</option>
       </select>
       <select id="mode" aria-label="Sort order">
         <option value="worst">predicted worst first</option>
         <option value="best">predicted best first</option>
         <option value="uncertain">most uncertain first</option>
+        <option value="worst_hands">worst hands first</option>
         <option value="newest">newest first</option>
         <option value="default">oldest first</option>
       </select>
@@ -85,6 +91,12 @@
       </select>
       <button class="btn" id="b-dedupe" title="Find near-identical images and remove all but one of each (reversible)">Remove duplicates</button>
       <span class="badge" id="dedupe-badge" hidden></span>
+    </div>
+    <div class="sep" role="presentation"></div>
+    <div class="group" title="Anime hand quality — good hands come free from your likes; mark the bad ones to teach it">
+      <button class="btn btn-nay" id="b-badhands" disabled title="Mark selected as having bad hands (training negatives)">✋ Bad hands</button>
+      <button class="btn" id="b-scorehands" title="(Re)train the hand model from your likes + marks, then score your anime">Score hands</button>
+      <span class="badge" id="hands-badge" hidden></span>
     </div>
     <div class="sep" role="presentation"></div>
     <div class="group">
@@ -150,6 +162,14 @@ async function load() {
       s.textContent = it.score.toFixed(2);
       c.appendChild(s);
     }
+    if (it.hand != null) {
+      const h = document.createElement('span');
+      h.className = 'hand-score';
+      h.title = 'predicted hand quality (low = likely bad hands)';
+      h.textContent = '✋' + it.hand.toFixed(2);
+      if (it.hand < 0.5) h.classList.add('bad');
+      c.appendChild(h);
+    }
     const zoom = document.createElement('button');
     zoom.className = 'cell-zoom';
     zoom.title = 'Enlarge'; zoom.setAttribute('aria-label', 'Enlarge image');
@@ -184,7 +204,7 @@ function updateInfo() {
   $('info').textContent = `${total.toLocaleString()} ${$('filter').value}${shown}` +
     (selected.size ? ` · selected: ${selected.size}` : '');
   const none = !selected.size;
-  for (const id of ['b-nay', 'b-maybe', 'b-yay', 'b-anime', 'b-realistic', 'b-remove', 'b-restore'])
+  for (const id of ['b-nay', 'b-maybe', 'b-yay', 'b-anime', 'b-realistic', 'b-remove', 'b-restore', 'b-badhands'])
     $(id).disabled = none;
 }
 
@@ -291,6 +311,57 @@ async function dedupe() {
   }
 }
 
+function setHandsBadge(kind, text) {
+  const b = $('hands-badge');
+  b.className = 'badge' + (kind ? ' ' + kind : '');
+  b.textContent = text; b.hidden = !text;
+}
+
+async function markBadHands() {
+  if (!selected.size) return;
+  const ids = [...selected], n = ids.length;
+  try { await api('/api/hands/mark', {image_ids: ids, bad: true}); }
+  catch (e) { toast('Mark failed: ' + e.message); return; }
+  toast(`Marked ${n} image${n === 1 ? '' : 's'} as bad hands — they'll train the model`,
+    {action: {label: 'Undo', onClick: async () => {
+      try { await api('/api/hands/mark', {image_ids: ids, bad: false}); } catch (e) {}
+    }}});
+}
+
+async function pollHandsJob(jobId, label) {
+  while (true) {
+    const job = await api(`/api/jobs/${jobId}`);
+    if (['done', 'failed', 'cancelled'].includes(job.state)) return job;
+    const prog = job.total ? ` ${job.done}/${job.total}` : '';
+    setHandsBadge('busy', `${label}${prog}…`);
+    await new Promise(r => setTimeout(r, 1500));
+  }
+}
+
+async function scoreHands() {
+  const btn = $('b-scorehands'); btn.disabled = true;
+  setHandsBadge('busy', 'training…');
+  try {
+    const t = await api('/api/hands/train', {});
+    const tj = await pollHandsJob(t.job_id, 'training');
+    if (tj.state !== 'done') {
+      setHandsBadge('fail', 'train ' + tj.state);
+      toast('Hand train ' + tj.state + (tj.error ? ': ' + tj.error : '')); return;
+    }
+    const auc = tj.result ? tj.result.val_auc : '?';
+    setHandsBadge('busy', `scoring (AUC ${auc})…`);
+    const s = await api('/api/hands/score', {});
+    const sj = await pollHandsJob(s.job_id, 'scoring');
+    if (sj.state !== 'done') { setHandsBadge('fail', 'score ' + sj.state); toast('Hand score ' + sj.state); return; }
+    const r = sj.result || {};
+    setHandsBadge('ok', `scored ${r.scored} · AUC ${auc}`);
+    toast(`Hand model AUC ${auc} · scored ${r.scored} anime images. Sort by "worst hands first".`);
+    load();
+  } catch (e) {
+    setHandsBadge('fail', 'failed'); toast('Hand scoring failed: ' + e.message);
+  } finally { btn.disabled = false; }
+}
+
 function nextPage() { if (offset + LIMIT < total) { offset += LIMIT; load(); } }
 function prevPage() { if (offset > 0) { offset = Math.max(0, offset - LIMIT); load(); } }
 
@@ -312,6 +383,8 @@ $('b-realistic').addEventListener('click', () => setStyle('realistic'));
 $('b-remove').addEventListener('click', remove);
 $('b-restore').addEventListener('click', restore);
 $('b-dedupe').addEventListener('click', dedupe);
+$('b-badhands').addEventListener('click', markBadHands);
+$('b-scorehands').addEventListener('click', scoreHands);
 $('b-next').addEventListener('click', nextPage);
 $('b-prev').addEventListener('click', prevPage);
 $('mode').addEventListener('change', () => { offset = 0; load(); });

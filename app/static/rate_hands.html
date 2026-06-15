@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Aesthetically — Rate hands</title>
+<link rel="stylesheet" href="/static/app.css">
+<style>
+  body { height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+  #hud { display: flex; gap: 16px; align-items: center; padding: 8px 16px;
+         background: var(--surface); font-variant-numeric: tabular-nums; }
+  #hud .big { font-size: 16px; font-weight: 600; }
+  .stat { display: inline-flex; gap: 4px; align-items: center; color: var(--text-dim); }
+  .stat b { color: var(--text); font-weight: 600; }
+  #h-hint { margin-left: auto; }
+  #stage { flex: 1; display: flex; align-items: center; justify-content: center;
+           min-height: 0; padding: 12px; position: relative; }
+  #stage img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: var(--radius-sm); }
+  #pred { position: absolute; left: 16px; top: 12px; background: rgba(0,0,0,.6);
+          font-size: 13px; padding: 4px 9px; border-radius: var(--radius); }
+  #pred.bad { background: rgba(226,96,106,.85); color: #fff; }
+  #flash { position: absolute; top: 16px; right: 18px; font-size: 16px; font-weight: 600;
+           background: rgba(0,0,0,.6); padding: 4px 10px; border-radius: var(--radius);
+           opacity: 0; transition: opacity .4s; pointer-events: none; }
+  #buttons { display: flex; gap: 8px; padding: 12px 16px 16px; background: var(--surface); }
+  #buttons .btn { flex: 1; padding: 12px 0; font-size: 14px; font-weight: 600; }
+  #buttons .btn.minor { flex: .5; font-weight: 400; }
+</style>
+</head>
+<body>
+  <div id="hud">
+    <select id="mode" aria-label="Queue order">
+      <option value="uncertain">most uncertain</option>
+      <option value="worst">worst hands first</option>
+      <option value="best">best hands first</option>
+      <option value="newest">newest</option>
+    </select>
+    <span class="big" id="h-pos">–</span>
+    <span class="stat" id="s-good"><b>0</b> good</span>
+    <span class="stat" id="s-bad"><b>0</b> bad</span>
+    <span class="stat" id="s-none"><b>0</b> no-hands</span>
+    <span class="meta" id="h-hint">rate the hands · anime only</span>
+  </div>
+  <div id="stage">
+    <img id="view" alt="" hidden>
+    <div id="done" class="empty-state" hidden>
+      <h2>All caught up</h2>
+      <p>No more scored anime to rate. Run <b>Score hands</b> in the Grid to score more, or switch queue order.</p>
+    </div>
+    <div id="pred"></div>
+    <div id="flash" aria-hidden="true"></div>
+  </div>
+  <div id="buttons">
+    <button class="btn minor" id="b-undo" title="Undo (z)">Undo <kbd>z</kbd></button>
+    <button class="btn btn-nay" id="b-bad">Bad hands <kbd>a</kbd></button>
+    <button class="btn btn-yay" id="b-good">Good hands <kbd>d</kbd></button>
+    <button class="btn minor" id="b-none" title="No (real) hands here — false detection or none">No hands <kbd>x</kbd></button>
+    <button class="btn minor" id="b-skip" title="Skip for now (space)">Skip <kbd>space</kbd></button>
+  </div>
+<script src="/static/app.js"></script>
+<script>
+initNav('hands');
+helpOverlay([
+  ['d', 'Good hands'],
+  ['a', 'Bad hands'],
+  ['x', 'No hands (false detection / none)'],
+  ['space', 'Skip for now'],
+  ['z', 'Undo last'],
+  ['?', 'Toggle this help'],
+]);
+
+const PRELOAD = 5;
+let queue = [], history = [];
+const $ = id => document.getElementById(id);
+
+function preload() { queue.slice(1, 1 + PRELOAD).forEach(it => { (new Image()).src = '/img/' + it.id; }); }
+
+function show() {
+  const it = queue[0];
+  $('view').hidden = !it; $('done').hidden = !!it;
+  const pred = $('pred');
+  if (!it) { pred.textContent = ''; return; }
+  $('view').src = '/img/' + it.id;
+  $('view').alt = 'image ' + it.id;
+  const bad = it.score < 0.5;
+  pred.textContent = `model: ✋${it.score.toFixed(2)} ${bad ? '(thinks bad)' : '(thinks good)'} · ${it.n_hands} hand${it.n_hands === 1 ? '' : 's'}`;
+  pred.classList.toggle('bad', bad);
+  preload();
+}
+
+function flash(txt, color) {
+  const f = $('flash');
+  f.textContent = txt; f.style.color = color; f.style.opacity = 1;
+  setTimeout(() => f.style.opacity = 0, 250);
+}
+
+async function refill() {
+  if (queue.length > PRELOAD) return;
+  const data = await api('/api/hands/queue?limit=40&mode=' + $('mode').value);
+  const have = new Set(queue.map(i => i.id));
+  const recent = new Set(history.slice(-20).map(h => h.id));
+  for (const it of data.items)
+    if (!have.has(it.id) && !recent.has(it.id)) queue.push(it);
+}
+
+async function refreshStats() {
+  const s = await api('/api/hands/status');
+  $('s-good').querySelector('b').textContent = (s.good_labels || 0).toLocaleString();
+  $('s-bad').querySelector('b').textContent = (s.bad_labels || 0).toLocaleString();
+  $('s-none').querySelector('b').textContent = (s.none_labels || 0).toLocaleString();
+  const done = (s.good_labels || 0) + (s.bad_labels || 0) + (s.none_labels || 0);
+  $('h-pos').textContent = done.toLocaleString() + ' rated';
+  $('h-hint').textContent = s.has_model
+    ? `model AUC ${s.metrics ? s.metrics.val_auc : '?'} · re-run Score hands to apply`
+    : 'no hand model yet';
+}
+
+async function rate(value) {
+  const it = queue.shift();
+  if (!it) return;
+  show();
+  if (value === 'skip') { queue.push(it); return; }
+  try {
+    await api('/api/hands/rate', {image_id: it.id, value});
+    history.push(it);
+    flash({good: 'Good', bad: 'Bad', none: 'No hands'}[value],
+          value === 'good' ? 'var(--yay)' : value === 'bad' ? 'var(--nay)' : 'var(--text-dim)');
+  } catch (e) { queue.unshift(it); show(); toast('Save failed: ' + e.message); return; }
+  refreshStats(); refill();
+}
+
+async function undo() {
+  const it = history.pop();
+  if (!it) return;
+  try {
+    await api('/api/hands/rate', {image_id: it.id, value: 'clear'});
+    queue.unshift(it); show(); flash('Undone', 'var(--accent)'); refreshStats();
+  } catch (e) { toast('Undo failed: ' + e.message); history.push(it); }
+}
+
+document.addEventListener('keydown', e => {
+  if (e.repeat || helpOverlayOpen()) return;
+  if (e.key === 'd') rate('good');
+  else if (e.key === 'a') rate('bad');
+  else if (e.key === 'x') rate('none');
+  else if (e.key === ' ') { e.preventDefault(); rate('skip'); }
+  else if (e.key === 'z') undo();
+});
+$('b-good').addEventListener('click', () => rate('good'));
+$('b-bad').addEventListener('click', () => rate('bad'));
+$('b-none').addEventListener('click', () => rate('none'));
+$('b-skip').addEventListener('click', () => rate('skip'));
+$('b-undo').addEventListener('click', undo);
+$('mode').addEventListener('change', async () => { queue = []; await refill(); show(); });
+
+(async () => { await refill(); show(); refreshStats(); })();
+</script>
+</body>
+</html>
