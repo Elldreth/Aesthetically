@@ -127,8 +127,11 @@ def train(style: str | None = None) -> dict:
     version = 1 + max((int(p.stem.split("_v")[1])
                        for p in MODELS_DIR.glob(f"{file_prefix}_v*.json")), default=0)
     name = f"{tag}:v{version}"
+    # UTC to match SQLite's datetime('now') on labels.created_at — otherwise the
+    # "new ratings since last train" count compares across timezones and never
+    # resets after a retrain.
     out = {"name": name, "coef": clf.coef_[0].tolist(), "intercept": float(clf.intercept_[0]),
-           "metrics": metrics, "trained_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+           "metrics": metrics, "trained_at": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())}
     (MODELS_DIR / f"{file_prefix}_v{version}.json").write_text(json.dumps(out), encoding="utf-8")
 
     # score the relevant images (this style's, or all for a global model)

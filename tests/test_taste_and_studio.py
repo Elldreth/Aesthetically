@@ -33,6 +33,26 @@ def _labeled_corpus(n=60, dim=16):
     return ids
 
 
+def test_trained_at_uses_utc(tmp_db):
+    """trained_at must track UTC (like SQLite datetime('now') on labels), or the
+    'new ratings since last train' count compares across timezones and never
+    resets after a retrain."""
+    import json
+    import time
+    from datetime import datetime
+
+    from app import taste
+
+    _labeled_corpus()
+    taste.train()
+    head = json.loads((taste.MODELS_DIR / "taste_v1.json").read_text())
+    fmt = "%Y-%m-%d %H:%M:%S"
+    now_utc = time.strftime(fmt, time.gmtime())
+    delta = abs((datetime.strptime(head["trained_at"], fmt)
+                 - datetime.strptime(now_utc, fmt)).total_seconds())
+    assert delta < 120, f"trained_at not UTC-aligned: {head['trained_at']} vs {now_utc}"
+
+
 def test_taste_train_end_to_end(tmp_db):
     from app import taste
 
