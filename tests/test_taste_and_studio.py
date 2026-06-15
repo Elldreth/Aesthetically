@@ -145,6 +145,52 @@ def test_train_taste_lora_with_fake_client(tmp_db, tmp_path):
     db.close()
 
 
+def test_train_taste_lora_filters_by_style_and_picks_checkpoint(tmp_db, tmp_path):
+    import json
+
+    from app import studio
+
+    db = get_conn()
+    anime_ids = []
+    for i in range(12):
+        for style, suffix in (("anime", "A"), ("realistic", "R")):
+            p = tmp_path / f"{style}{i}.png"
+            p.write_bytes(png_bytes(color=((i * 9) % 255, 40, 90)))
+            image_id = add_image(db, f"{suffix}{i}", path=str(p))
+            add_embedding(db, image_id)
+            db.execute("INSERT INTO labels (image_id, kind, value, source)"
+                       " VALUES (?, 'binary', 1.0, 'test')", (image_id,))
+            db.execute("INSERT INTO image_styles (image_id, style, source)"
+                       " VALUES (?, ?, 'manual')", (image_id, style))
+            if style == "anime":
+                anime_ids.append(image_id)
+    db.commit()
+    db.close()
+
+    # liked_counts reflects the per-style split
+    assert studio.liked_counts()["anime"] == 12
+    assert studio.liked_counts()["realistic"] == 12
+
+    fake = FakeArtifex()
+    out = studio.train_taste_lora("anime-lora", max_images=20, style="anime", client=fake)
+    # base model defaulted to the anime checkpoint...
+    assert out["model"] == studio.STYLE_CHECKPOINTS["anime"]
+    assert fake.train_calls[0]["model"] == studio.STYLE_CHECKPOINTS["anime"]
+    # ...and the dataset is anime-only (none of the 12 realistic images leaked in)
+    db = get_conn()
+    fp = json.loads(db.execute(
+        "SELECT dataset_fingerprint_json FROM training_runs WHERE id=?",
+        (out["run_id"],)).fetchone()["dataset_fingerprint_json"])
+    db.close()
+    assert len(fp["image_ids"]) == 12
+    assert set(fp["image_ids"]) <= set(anime_ids)
+
+    # an explicit model overrides the style default
+    out2 = studio.train_taste_lora("anime-lora-2", max_images=20, style="anime",
+                                   model="juggernaut-xl-ragnarok", client=fake)
+    assert out2["model"] == "juggernaut-xl-ragnarok"
+
+
 def test_train_taste_lora_requires_enough_likes(tmp_db):
     from app import studio
 

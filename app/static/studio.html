@@ -59,26 +59,25 @@
   </section>
 
   <section>
-    <h2>Taste LoRA — train on your best-loved, most diverse likes</h2>
+    <h2>Train a taste LoRA — your best-loved images become a reusable style</h2>
     <div class="row">
       <input id="lora-name" placeholder="lora name" value="my-taste-v1" size="16" aria-label="LoRA name">
-      <label class="dim">preset <select id="lora-preset" aria-label="Training preset"></select></label>
-      <label class="dim">images <input id="lora-k" type="number" value="60" min="10" max="200" aria-label="Max training images"></label>
+      <label class="dim">images of <select id="lora-style" aria-label="Which liked images to train on"></select></label>
+      <label class="dim">top <input id="lora-k" type="number" value="60" min="10" max="200" aria-label="How many images"> images</label>
+      <label class="dim">base model <select id="lora-model" aria-label="Base checkpoint to train against"></select></label>
+      <label class="dim">strength <select id="lora-preset" aria-label="Training preset"></select></label>
       <button class="btn btn-primary" id="b-train">Train</button>
       <button class="btn" id="b-eval" title="probe-prompt eval of the latest completed run">Eval latest run</button>
       <span class="badge" id="train-status" hidden></span>
     </div>
     <p class="dim" id="train-readout" style="margin:6px 0 0">…</p>
-    <details id="lora-advanced" style="margin:6px 0 0">
-      <summary class="dim" style="cursor:pointer">Advanced — override the preset</summary>
-      <div class="row" style="margin-top:6px">
-        <label class="dim">steps <input id="lora-steps" type="number" min="200" max="6000" step="50" placeholder="auto" aria-label="Override total steps"></label>
-        <label class="dim">learning rate <input id="lora-lr" type="number" min="0.00001" max="0.001" step="0.00001" placeholder="preset" aria-label="Override learning rate"></label>
-        <label class="dim">rank <input id="lora-rank" type="number" min="4" max="128" step="4" placeholder="preset" aria-label="Override rank"></label>
-        <button class="btn" id="b-reset-adv" type="button" title="Clear overrides and use the preset">Reset</button>
-      </div>
-      <p class="dim" style="margin:6px 0 0;font-size:12px">Leave a field blank to use the preset. An explicit step count is used as-is (not clamped). Alpha = rank ÷ 2.</p>
-    </details>
+    <div class="row" id="lora-finetune" style="margin:6px 0 0; align-items:center">
+      <span class="dim" style="font-size:12px">Fine-tune (optional, blank = use strength preset):</span>
+      <label class="dim">steps <input id="lora-steps" type="number" min="200" max="6000" step="50" placeholder="auto" aria-label="Override total steps"></label>
+      <label class="dim">learning rate <input id="lora-lr" type="number" min="0.00001" max="0.001" step="0.00001" placeholder="preset" aria-label="Override learning rate"></label>
+      <label class="dim">rank <input id="lora-rank" type="number" min="4" max="128" step="4" placeholder="preset" aria-label="Override rank"></label>
+      <button class="btn" id="b-reset-adv" type="button" title="Clear overrides and use the preset">Reset</button>
+    </div>
     <table id="runs">
       <thead><tr><th>run</th><th>name</th><th>status</th><th>dataset</th><th>artifact</th></tr></thead>
       <tbody></tbody>
@@ -131,11 +130,15 @@ function populateGenControls(h) {
   const loras = (h.loras && h.loras.data) ? h.loras.data.map(l => l.name)
               : (Array.isArray(h.loras) ? h.loras : []);
   if (models.length) {
-    $('gen-model').innerHTML = '';
-    for (const m of models) {
-      const o = document.createElement('option'); o.value = m; o.textContent = m;
-      $('gen-model').appendChild(o);
+    for (const selId of ['gen-model', 'lora-model']) {
+      $(selId).innerHTML = '';
+      for (const m of models) {
+        const o = document.createElement('option'); o.value = m; o.textContent = m;
+        $(selId).appendChild(o);
+      }
     }
+    syncModelToStyle();   // base-model defaults to the chosen style's checkpoint
+    updateReadout();
   }
   // keep the existing "none" option, append the LoRAs (taste ones first)
   const sorted = loras.slice().sort((a, b) =>
@@ -295,11 +298,12 @@ $('b-train').addEventListener('click', async () => {
     const ov = loraOverrides();
     const r = await api('/api/studio/train_lora', {
       name: $('lora-name').value.trim(), max_images: +$('lora-k').value,
-      preset: $('lora-preset').value,
+      preset: $('lora-preset').value, style: $('lora-style').value,
+      model: $('lora-model').value || null,
       ...(ov.steps ? {steps: Math.round(ov.steps)} : {}),
       ...(ov.lr != null ? {lr: ov.lr} : {}),
       ...(ov.rank ? {rank: Math.round(ov.rank)} : {})});
-    toast(`Run #${r.run_id}: ${r.dataset_size} images × ${r.preset} → ` +
+    toast(`Run #${r.run_id}: ${r.dataset_size} images → ${r.model || 'default'} · ${r.preset} · ` +
           `${r.steps} steps, lr ${r.lr}, rank ${r.rank}. Training…`);
     pollRun(r.run_id);
   } catch (e) {
@@ -398,13 +402,20 @@ function clusterCard(c, i) {
   const train = document.createElement('button');
   train.className = 'btn btn-primary';
   train.textContent = 'Train LoRA';
+  train.title = 'Uses the base model, strength, and fine-tune settings from the form above';
   train.addEventListener('click', async () => {
     train.disabled = true;
     toast(`Training ${nameInput.value}…`);
     try {
-      const res = await api('/api/studio/train_cluster_lora',
-        {name: nameInput.value.trim(), image_ids: c.image_ids, preset: $('lora-preset').value});
-      toast(`Run #${res.run_id}: ${res.dataset_size} images × ${res.preset} → ` +
+      const ov = loraOverrides();
+      const res = await api('/api/studio/train_cluster_lora', {
+        name: nameInput.value.trim(), image_ids: c.image_ids,
+        preset: $('lora-preset').value, model: $('lora-model').value || null,
+        max_images: Math.min(c.size, 200),
+        ...(ov.steps ? {steps: Math.round(ov.steps)} : {}),
+        ...(ov.lr != null ? {lr: ov.lr} : {}),
+        ...(ov.rank ? {rank: Math.round(ov.rank)} : {})});
+      toast(`Run #${res.run_id}: ${res.dataset_size} images → ${res.model || 'default'} · ${res.preset} · ` +
             `${res.steps} steps, lr ${res.lr}, rank ${res.rank}. Training…`);
       pollRun(res.run_id); loadRuns();
     } catch (e) { toast('Train failed: ' + e.message); train.disabled = false; }
@@ -427,10 +438,24 @@ function loraOverrides() {
   const num = id => { const v = parseFloat($(id).value); return isFinite(v) && v > 0 ? v : null; };
   return {steps: num('lora-steps'), lr: num('lora-lr'), rank: num('lora-rank')};
 }
+// Point the base-model dropdown at the checkpoint that matches the chosen style
+// (anime → hoseki, etc.). No-op if that checkpoint isn't an available option.
+function syncModelToStyle() {
+  if (!PRESETS) return;
+  const ckpt = (PRESETS.checkpoints || {})[$('lora-style').value];
+  const sel = $('lora-model');
+  if (ckpt && [...sel.options].some(o => o.value === ckpt)) sel.value = ckpt;
+}
+
 function updateReadout() {
   if (!PRESETS) return;
   const p = PRESETS.presets[$('lora-preset').value];
-  const imgs = +$('lora-k').value || 0;
+  const style = $('lora-style').value;
+  const counts = PRESETS.liked_counts || {};
+  const avail = counts[style] != null ? counts[style] : 0;
+  const want = +$('lora-k').value || 0;
+  const imgs = Math.min(want, avail);            // dataset caps at what's eligible
+  const model = $('lora-model').value || 'Artifex default';
   const ov = loraOverrides();
   // Mirror backend _resolve_training: explicit steps used as-is; else derived+clamped.
   const raw = imgs * p.steps_per_image;
@@ -443,12 +468,19 @@ function updateReadout() {
   $('lora-lr').placeholder = String(p.lr);
   $('lora-rank').placeholder = String(p.rank);
   $('lora-steps').placeholder = `auto ≈ ${derived.toLocaleString()}`;
+  const scope = style === 'all' ? 'liked images' : `${style} likes`;
+  const r = $('train-readout');
+  if (avail < 10) {
+    r.textContent = `Only ${avail} eligible ${scope} — rate at least 10 ${style === 'all' ? 'images' : style} first.`;
+    return;
+  }
   const stepNote = ov.steps ? ` (override)`
     : (raw !== derived ? ` (clamped from ${raw.toLocaleString()})` : '');
   const tail = (ov.steps || ov.lr != null || ov.rank)
     ? '  —  custom override' : `  —  ${p.use}`;
-  $('train-readout').textContent =
-    `up to ${imgs} images × ${p.steps_per_image}/img → ${steps.toLocaleString()} steps${stepNote}` +
+  r.textContent =
+    `top ${imgs} of ${avail.toLocaleString()} ${scope} → ${model}` +
+    `  ·  ${imgs} × ${p.steps_per_image}/img → ${steps.toLocaleString()} steps${stepNote}` +
     `  ·  lr ${lr}  ·  rank ${rank} / alpha ${alpha}${tail}`;
 }
 
@@ -462,13 +494,28 @@ async function loadPresets() {
     if (key === PRESETS.default) o.selected = true;
     sel.appendChild(o);
   }
+  // Style options labelled with how many eligible likes each has; default to the
+  // style with the most (you can't train a style you've barely rated).
+  const counts = PRESETS.liked_counts || {};
+  const styleSel = $('lora-style');
+  styleSel.innerHTML = '';
+  for (const [val, label] of [['anime', 'anime'], ['realistic', 'realistic'], ['all', 'all styles']]) {
+    const o = document.createElement('option');
+    o.value = val;
+    o.textContent = `${label} (${(counts[val] || 0).toLocaleString()})`;
+    styleSel.appendChild(o);
+  }
+  styleSel.value = (counts.realistic || 0) > (counts.anime || 0) ? 'realistic' : 'anime';
   $('lora-k').value = PRESETS.default_max_images;
   ['lora-preset', 'lora-k', 'lora-steps', 'lora-lr', 'lora-rank']
     .forEach(id => $(id).addEventListener('input', updateReadout));
+  $('lora-style').addEventListener('change', () => { syncModelToStyle(); updateReadout(); });
+  $('lora-model').addEventListener('change', updateReadout);
   $('b-reset-adv').addEventListener('click', () => {
     ['lora-steps', 'lora-lr', 'lora-rank'].forEach(id => $(id).value = '');
     updateReadout();
   });
+  syncModelToStyle();
   updateReadout();
 }
 
