@@ -116,6 +116,8 @@
   .star-btn { background: none; border: none; cursor: pointer; font-size: 15px;
     color: var(--text-dim); padding: 0 2px; line-height: 1; vertical-align: middle; }
   .star-btn.on { color: #e0b15a; }
+  .star-btn.del { font-size: 13px; }
+  .star-btn.del:hover { filter: brightness(1.3); }
   #b-star-lora.on { color: #e0b15a; }
   .cluster-thumbs { display: flex; gap: 4px; }
   .cluster-thumbs img { width: 64px; height: 64px; object-fit: cover; border-radius: var(--radius-sm); }
@@ -216,20 +218,10 @@ async function health() {
   }
 }
 
-$('b-del-lora').addEventListener('click', async () => {
-  const sel = $('gen-lora');
-  const name = sel.value;
+$('b-del-lora').addEventListener('click', () => {
+  const name = $('gen-lora').value;
   if (!name) { toast('Pick a LoRA to delete first'); return; }
-  if (!confirm(`Delete LoRA "${name}" permanently? This removes the trained file and its run record.`)) return;
-  const btn = $('b-del-lora'); btn.disabled = true;
-  try {
-    const r = await api('/api/studio/delete_lora', {name});
-    [...sel.options].forEach(o => { if (o.value === name) o.remove(); });
-    sel.value = '';
-    toast(`Deleted LoRA "${name}"` + (r.runs_removed ? ` and ${r.runs_removed} run record(s)` : ''));
-    loadRuns();
-  } catch (e) { toast('Delete failed: ' + e.message); }
-  finally { btn.disabled = false; }
+  deleteLora(name);     // shared with the per-row delete in the runs table
 });
 
 function refreshStarBtn() {
@@ -348,6 +340,24 @@ function starToggle(name, starred) {
   return b;
 }
 
+async function deleteLora(name) {
+  if (!confirm(`Delete LoRA "${name}" permanently? This removes the trained file and its run record.`)) return;
+  try {
+    const r = await api('/api/studio/delete_lora', {name});
+    [...$('gen-lora').options].forEach(o => { if (o.value === name) o.remove(); });
+    if ($('gen-lora').value === name) { $('gen-lora').value = ''; refreshStarBtn(); }
+    toast(`Deleted LoRA "${name}"` + (r.runs_removed ? ` and ${r.runs_removed} run record(s)` : ''));
+    loadRuns();
+  } catch (e) { toast('Delete failed: ' + e.message); }
+}
+
+function deleteBtn(name) {
+  const b = document.createElement('button');
+  b.className = 'star-btn del'; b.textContent = '🗑'; b.title = 'Delete this LoRA permanently';
+  b.addEventListener('click', (e) => { e.stopPropagation(); deleteLora(name); });
+  return b;
+}
+
 async function loadRuns() {
   const r = await api('/api/studio/runs');
   const tb = $('runs').querySelector('tbody');
@@ -382,6 +392,7 @@ async function loadRuns() {
       else if (i === 4 && run.artifact_path) {
         td.className = 'dim';
         td.append(starToggle(run.artifact_path, run.starred),
+                  deleteBtn(run.artifact_path),
                   document.createTextNode(' ' + run.artifact_path));
       } else { td.textContent = text; if (i === 3 || i === 4) td.className = 'dim'; }
       tr.appendChild(td);
