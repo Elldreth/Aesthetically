@@ -322,6 +322,15 @@ def train_taste_lora(name: str, max_images: int = DEFAULT_MAX_IMAGES,
                        rank=rank, client=client)
 
 
+def delete_lora(name: str, client: ArtifexClient | None = None) -> dict:
+    """Permanently delete a trained LoRA from Artifex and drop its run records."""
+    client = _get_client(client)
+    artifex = client.delete_lora(name)
+    with conn() as db:
+        cur = db.execute("DELETE FROM training_runs WHERE artifact_path = ?", (name,))
+    return {"deleted": name, "runs_removed": cur.rowcount, "artifex": artifex}
+
+
 def poll_run(run_id: int, client: ArtifexClient | None = None) -> dict:
     """Proxy Artifex job state into training_runs; returns merged status."""
     client = _get_client(client)

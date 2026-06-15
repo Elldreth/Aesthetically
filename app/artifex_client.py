@@ -64,3 +64,14 @@ class ArtifexClient:
         r = self._client.get(f"/v1/train/{job_id}")
         r.raise_for_status()
         return r.json()
+
+    def list_loras(self) -> dict:
+        r = self._client.get("/v1/loras")
+        r.raise_for_status()
+        return r.json()
+
+    def delete_lora(self, name: str) -> dict:
+        """DELETE /v1/loras/{name} — permanently remove a trained LoRA file."""
+        r = self._client.delete(f"/v1/loras/{name}")
+        r.raise_for_status()
+        return r.json()

@@ -551,6 +551,21 @@ def studio_train_lora(body: TrainLoraIn):
         raise _studio_guard(e)
 
 
+class DeleteLoraIn(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+
+
+@app.post("/api/studio/delete_lora")
+def studio_delete_lora(body: DeleteLoraIn):
+    """Permanently delete a trained LoRA (Artifex file + its run records)."""
+    from . import studio
+
+    try:
+        return studio.delete_lora(body.name)
+    except Exception as e:
+        raise _studio_guard(e)
+
+
 @app.get("/api/studio/runs")
 def studio_runs():
     with conn() as db:

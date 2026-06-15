@@ -51,6 +51,7 @@
     <div class="row" style="margin-top:8px">
       <label class="dim">model <select id="gen-model" aria-label="Base checkpoint"></select></label>
       <label class="dim">LoRA <select id="gen-lora" aria-label="LoRA"><option value="">none</option></select></label>
+      <button class="btn" id="b-del-lora" title="Permanently delete the selected LoRA" aria-label="Delete selected LoRA">🗑</button>
       <label class="dim">weight <input id="gen-weight" type="number" value="0.6" min="0" max="1.5" step="0.1" style="width:62px" aria-label="LoRA weight"></label>
       <label class="dim">seeds <select id="n" aria-label="Number of seeds"><option>2</option><option selected>4</option><option>6</option><option>8</option></select></label>
       <button class="btn btn-primary" id="b-gen">Generate</button>
@@ -190,6 +191,22 @@ async function health() {
     $('callout-wrap').hidden = false;
   }
 }
+
+$('b-del-lora').addEventListener('click', async () => {
+  const sel = $('gen-lora');
+  const name = sel.value;
+  if (!name) { toast('Pick a LoRA to delete first'); return; }
+  if (!confirm(`Delete LoRA "${name}" permanently? This removes the trained file and its run record.`)) return;
+  const btn = $('b-del-lora'); btn.disabled = true;
+  try {
+    const r = await api('/api/studio/delete_lora', {name});
+    [...sel.options].forEach(o => { if (o.value === name) o.remove(); });
+    sel.value = '';
+    toast(`Deleted LoRA "${name}"` + (r.runs_removed ? ` and ${r.runs_removed} run record(s)` : ''));
+    loadRuns();
+  } catch (e) { toast('Delete failed: ' + e.message); }
+  finally { btn.disabled = false; }
+});
 
 async function rateResult(imageId, value, label) {
   try {
