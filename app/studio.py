@@ -43,6 +43,14 @@ DEFAULT_PRESET = "balanced"
 DEFAULT_MAX_IMAGES = 60
 STEPS_MIN, STEPS_MAX = 600, 3000   # <600 underfits; >3000 SDXL style LoRAs overfit
 
+# Which base checkpoint a style's LoRA trains against. A style LoRA only helps
+# on a matched checkpoint (validated: anime LoRA improved hoseki, not juggernaut),
+# so the style choice also picks a sensible default base model — overridable.
+STYLE_CHECKPOINTS = {
+    "anime": "hoseki-noobai-anime",
+    "realistic": "juggernaut-xl-ragnarok",
+}
+
 
 def _resolve_training(preset: str, n_images: int, steps: int | None,
                       lr: float | None, rank: int | None) -> dict:
@@ -143,14 +151,39 @@ def _diversity_select(ids: np.ndarray, mat: np.ndarray, k: int,
     return [int(ids[j]) for j in chosen]
 
 
-def build_taste_dataset(k: int = 40) -> list[dict]:
+def liked_counts() -> dict:
+    """Eligible (liked, non-near-dup) image counts per style — what a taste LoRA
+    can actually draw from. Powers the training readout."""
+    with conn() as db:
+        base = ("FROM images i"
+                " JOIN current_labels c ON c.image_id = i.id"
+                "  AND c.kind = 'binary' AND c.value = 1.0"
+                " WHERE NOT EXISTS (SELECT 1 FROM near_dups d WHERE d.image_id = i.id)")
+        by = {r["style"]: r["n"] for r in db.execute(
+            "SELECT ist.style AS style, count(*) AS n"
+            " FROM images i"
+            " JOIN current_labels c ON c.image_id = i.id"
+            "  AND c.kind = 'binary' AND c.value = 1.0"
+            " JOIN image_styles ist ON ist.image_id = i.id"
+            " WHERE NOT EXISTS (SELECT 1 FROM near_dups d WHERE d.image_id = i.id)"
+            " GROUP BY ist.style").fetchall()}
+        total = db.execute(f"SELECT count(*) AS n {base}").fetchone()["n"]
+    return {"anime": by.get("anime", 0), "realistic": by.get("realistic", 0), "all": total}
+
+
+def build_taste_dataset(k: int = 40, style: str | None = None) -> list[dict]:
     """Pick the k best-loved, maximally diverse images for a style LoRA.
 
-    Ranking: Bradley-Terry strength when pairwise votes exist, else taste
-    score, else recency. Diversity: greedy max-min in SigLIP space."""
+    With ``style`` ('anime'/'realistic'), the dataset is restricted to images
+    tagged that style — so an anime LoRA trains on anime likes only. Ranking:
+    Bradley-Terry strength when pairwise votes exist, else taste score, else
+    recency. Diversity: greedy max-min in SigLIP space."""
+    style_join = ("JOIN image_styles ist ON ist.image_id = i.id AND ist.style = ?"
+                  if style in ("anime", "realistic") else "")
+    params = (style,) if style_join else ()
     with conn() as db:
         rows = db.execute(
-            """SELECT i.id,
+            f"""SELECT i.id,
                       (SELECT score FROM predictions p WHERE p.image_id = i.id
                        AND p.model LIKE 'taste:%') AS taste,
                       (SELECT count(*) FROM labels w WHERE w.kind = 'pairwise'
@@ -161,7 +194,9 @@ def build_taste_dataset(k: int = 40) -> list[dict]:
                        AND s.kind = 'local' LIMIT 1) AS path
                FROM images i
                JOIN current_labels c ON c.image_id = i.id AND c.kind = 'binary' AND c.value = 1.0
-               WHERE NOT EXISTS (SELECT 1 FROM near_dups d WHERE d.image_id = i.id)"""
+               {style_join}
+               WHERE NOT EXISTS (SELECT 1 FROM near_dups d WHERE d.image_id = i.id)""",
+            params,
         ).fetchall()
         cands = [dict(r) for r in rows if r["path"]]
         for c in cands:
@@ -246,17 +281,25 @@ def submit_lora(name: str, image_ids: list[int], *, preset: str = DEFAULT_PRESET
         run_id = cur.lastrowid
     return {"run_id": run_id, "job_id": job.get("job_id"), "dataset_size": len(ids),
             "steps": t["steps"], "lr": t["lr"], "rank": t["rank"], "preset": t["preset"],
-            "state": job.get("state")}
+            "model": model, "state": job.get("state")}
 
 
 def train_taste_lora(name: str, max_images: int = DEFAULT_MAX_IMAGES,
                      preset: str = DEFAULT_PRESET, model: str | None = None,
-                     steps: int | None = None, lr: float | None = None,
-                     rank: int | None = None, client: ArtifexClient | None = None) -> dict:
-    """Submit a style-LoRA job from the globally-curated taste dataset."""
-    dataset = build_taste_dataset(max_images)
+                     style: str | None = None, steps: int | None = None,
+                     lr: float | None = None, rank: int | None = None,
+                     client: ArtifexClient | None = None) -> dict:
+    """Submit a taste-LoRA job from the curated dataset for a style.
+
+    ``style`` restricts the dataset to that style's likes and, when ``model`` is
+    not given, selects the matching base checkpoint (anime → hoseki, etc.)."""
+    dataset = build_taste_dataset(max_images, style=style)
     if len(dataset) < 10:
-        raise RuntimeError(f"only {len(dataset)} usable liked images — rate more first")
+        scope = f" {style}" if style in ("anime", "realistic") else ""
+        raise RuntimeError(
+            f"only {len(dataset)} usable{scope} liked images — rate more first")
+    if model is None and style in STYLE_CHECKPOINTS:
+        model = STYLE_CHECKPOINTS[style]
     return submit_lora(name, [c["id"] for c in dataset], preset=preset,
                        max_images=max_images, model=model, steps=steps, lr=lr,
                        rank=rank, client=client)

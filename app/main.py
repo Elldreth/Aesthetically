@@ -487,18 +487,22 @@ def studio_best_of_n(body: BestOfNIn):
 
 @app.get("/api/studio/presets")
 def studio_presets():
-    """Training presets + clamp, so the UI shows the exact steps/lr/rank math."""
+    """Training presets + clamp + per-style dataset sizes + the style→checkpoint
+    map, so the UI shows the exact steps/lr/rank math and which base model fits."""
     from . import studio
 
     return {"presets": studio.LORA_PRESETS, "default": studio.DEFAULT_PRESET,
             "default_max_images": studio.DEFAULT_MAX_IMAGES,
-            "steps_min": studio.STEPS_MIN, "steps_max": studio.STEPS_MAX}
+            "steps_min": studio.STEPS_MIN, "steps_max": studio.STEPS_MAX,
+            "checkpoints": studio.STYLE_CHECKPOINTS,
+            "liked_counts": studio.liked_counts()}
 
 
 class TrainLoraIn(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     max_images: int = Field(default=60, ge=10, le=200)
     preset: str = Field(default="balanced", pattern="^(subtle|balanced|strong)$")
+    style: str | None = Field(default=None, pattern="^(anime|realistic|all)$")
     model: str | None = None
     steps: int | None = Field(default=None, ge=200, le=6000)  # optional override
     lr: float | None = Field(default=None, gt=0, le=1e-2)
@@ -509,10 +513,12 @@ class TrainLoraIn(BaseModel):
 def studio_train_lora(body: TrainLoraIn):
     from . import studio
 
+    style = None if body.style in (None, "all") else body.style
     try:
         return studio.train_taste_lora(body.name, max_images=body.max_images,
                                        preset=body.preset, model=body.model,
-                                       steps=body.steps, lr=body.lr, rank=body.rank)
+                                       style=style, steps=body.steps,
+                                       lr=body.lr, rank=body.rank)
     except Exception as e:
         raise _studio_guard(e)
 
