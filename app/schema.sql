@@ -102,6 +102,29 @@ CREATE TABLE IF NOT EXISTS image_styles (
 );
 CREATE INDEX IF NOT EXISTS idx_image_styles_style ON image_styles(style);
 
+-- Anime hand-quality score: P(good hands) for the WORST detected hand in an
+-- image (one bad hand sinks it). Populated by hands.score_all for anime images
+-- only (realistic = real photos = good by construction). 'hand'-kind labels in
+-- `labels` (value=0) are the bad-hand training negatives; good comes from likes.
+CREATE TABLE IF NOT EXISTS hand_scores (
+  image_id INTEGER PRIMARY KEY REFERENCES images(id),
+  score REAL NOT NULL,                     -- min P(good) across the image's hands
+  n_hands INTEGER NOT NULL,
+  model TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_hand_scores_score ON hand_scores(score);
+
+-- Hand-quality training negatives: images the user marked as having bad hands.
+-- Good examples come free from likes (liked => good hands), so only bad needs
+-- marking. One row per image (upserted); label 0 = bad hands.
+CREATE TABLE IF NOT EXISTS hand_labels (
+  image_id INTEGER PRIMARY KEY REFERENCES images(id),
+  label INTEGER NOT NULL,                  -- 0 = bad hands (1 reserved for explicit good)
+  source TEXT NOT NULL DEFAULT 'manual',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- "Score folder" (ephemeral prediction) persistence — kept entirely separate
 -- from the training collection (images/labels). Embeddings are cached by file
 -- content hash so re-scoring a folder is instant and a new taste model can

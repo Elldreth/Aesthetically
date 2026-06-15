@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import os
 import secrets
@@ -185,7 +186,8 @@ _UNRATED = """
     FROM (SELECT i.*,
                  (SELECT score FROM predictions p WHERE p.image_id = i.id
                   AND p.model LIKE 'taste:%' ORDER BY p.created_at DESC, p.model DESC
-                  LIMIT 1) AS score
+                  LIMIT 1) AS score,
+                 (SELECT score FROM hand_scores h WHERE h.image_id = i.id) AS hand
           FROM images i) i
     WHERE NOT EXISTS (SELECT 1 FROM current_labels c
                       WHERE c.image_id = i.id AND c.kind IN ('binary','exclude'))
@@ -238,7 +240,8 @@ _SCORED_IMAGES = """
     FROM (SELECT i.*,
                  (SELECT score FROM predictions p WHERE p.image_id = i.id
                   AND p.model LIKE 'taste:%' ORDER BY p.created_at DESC, p.model DESC
-                  LIMIT 1) AS score
+                  LIMIT 1) AS score,
+                 (SELECT score FROM hand_scores h WHERE h.image_id = i.id) AS hand
           FROM images i) i
 """
 # every fragment ends with a WHERE so a style clause can append uniformly
@@ -251,9 +254,14 @@ _GRID_FILTER = {
     "disliked": _LABELED + "0.0",
     "removed": _SCORED_IMAGES + " JOIN current_labels c ON c.image_id = i.id"
                " WHERE c.kind = 'exclude'",
+    "bad_hands": _SCORED_IMAGES + " WHERE i.hand IS NOT NULL AND i.hand < 0.5"
+                 " AND NOT EXISTS (SELECT 1 FROM current_labels c"
+                 " WHERE c.image_id = i.id AND c.kind = 'exclude')",
     "all": _SCORED_IMAGES + " WHERE 1=1",
 }
-_GRID_ORDER = dict(_QUEUE_ORDER, newest="i.id DESC")
+# worst_hands: lowest hand-score first (probable bad hands), unscored images last
+_GRID_ORDER = dict(_QUEUE_ORDER, newest="i.id DESC",
+                   worst_hands="i.hand IS NULL, i.hand ASC")
 _STYLE_CLAUSE = {
     "anime": " AND EXISTS (SELECT 1 FROM image_styles st WHERE st.image_id=i.id AND st.style='anime')",
     "realistic": " AND EXISTS (SELECT 1 FROM image_styles st WHERE st.image_id=i.id AND st.style='realistic')",
@@ -280,7 +288,7 @@ def grid(mode: str = "worst", limit: int = 60, offset: int = 0,
     with conn() as db:
         total = db.execute(f"SELECT count(*) AS n {source}").fetchone()["n"]
         rows = db.execute(
-            f"""SELECT i.id, i.score {source} ORDER BY {order} LIMIT ? OFFSET ?""",
+            f"""SELECT i.id, i.score, i.hand {source} ORDER BY {order} LIMIT ? OFFSET ?""",
             (limit, offset),
         ).fetchall()
     return {"total": total, "items": [dict(r) for r in rows]}
@@ -1121,4 +1129,87 @@ def styles_set(body: SetStyleIn):
     return {"updated": styles.set_style(body.image_ids, body.style)}
 
 
+# ---- anime hand-quality scoring ----
+
+@app.get("/api/hands/status")
+def hands_status():
+    """Hand model + scoring state for the Grid controls."""
+    from . import hands
+
+    head = hands.latest_head()
+    with conn() as db:
+        n_bad = db.execute("SELECT count(*) AS n FROM hand_labels WHERE label=0").fetchone()["n"]
+        n_scored = db.execute("SELECT count(*) AS n FROM hand_scores").fetchone()["n"]
+    return {"has_model": bool(head),
+            "metrics": head.get("metrics") if head else None,
+            "model": head.get("name") if head else None,
+            "bad_labels": n_bad, "scored": n_scored}
+
+
+@app.post("/api/hands/train")
+def hands_train():
+    from . import hands
+
+    job = jobs.submit("hands", "training hand model",
+                      lambda progress, cancel: hands.train(progress=progress, cancel=cancel))
+    return {"started": True, "job_id": job.id}
+
+
+@app.post("/api/hands/score")
+def hands_score():
+    from . import hands
+
+    job = jobs.submit("hands", "scoring anime hands",
+                      lambda progress, cancel: hands.score_all(progress, cancel))
+    return {"started": True, "job_id": job.id}
+
+
+class MarkHandsIn(BaseModel):
+    image_ids: list[int] = Field(min_length=1, max_length=2000)
+    bad: bool = True
+
+
+@app.post("/api/hands/mark")
+def hands_mark(body: MarkHandsIn):
+    """Mark images as having bad hands (training negatives), or clear that mark.
+    Good hands aren't marked — they come free from your likes."""
+    with conn() as db:
+        _require_images(db, body.image_ids)
+        if body.bad:
+            db.executemany(
+                "INSERT INTO hand_labels (image_id, label, source) VALUES (?, 0, 'manual')"
+                " ON CONFLICT(image_id) DO UPDATE SET label=0",
+                [(i,) for i in body.image_ids])
+        else:
+            ph = ",".join("?" * len(body.image_ids))
+            db.execute(f"DELETE FROM hand_labels WHERE image_id IN ({ph})", body.image_ids)
+    return {"marked": len(body.image_ids), "bad": body.bad}
+
+
+# Experimental hand-quality probe: serve detected hand crops + manifest for the
+# labeling page (data/ is gitignored, so user images never enter the repo) and
+# persist good/bad labels to a known file the scoring script reads.
+_HAND_PROBE_DIR = DATA_DIR / "hand_probe"
+_HAND_PROBE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+class HandLabelsIn(BaseModel):
+    labels: dict[str, str] = Field(default_factory=dict)
+
+
+@app.get("/api/hand_probe/labels")
+def hand_probe_labels_get():
+    f = _HAND_PROBE_DIR / "labels.json"
+    return {"labels": json.loads(f.read_text()) if f.is_file() else {}}
+
+
+@app.post("/api/hand_probe/labels")
+def hand_probe_labels_set(body: HandLabelsIn):
+    clean = {k: v for k, v in body.labels.items() if v in ("good", "bad")}
+    (_HAND_PROBE_DIR / "labels.json").write_text(json.dumps(clean), encoding="utf-8")
+    n_good = sum(1 for v in clean.values() if v == "good")
+    return {"saved": len(clean), "good": n_good, "bad": len(clean) - n_good}
+
+
+app.mount("/hand_probe", StaticFiles(directory=_HAND_PROBE_DIR), name="hand_probe")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
