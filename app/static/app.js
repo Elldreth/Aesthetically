@@ -70,6 +70,7 @@ function initNav(activeTab) {
     ['home', 'Home', '/'],
     ['rate', 'Rate', '/static/index.html'],
     ['grid', 'Grid', '/static/grid.html'],
+    ['hands', 'Hands', '/static/rate_hands.html'],
     ['tournament', 'Tournament', '/static/tournament.html'],
     ['studio', 'Studio', '/static/studio.html'],
   ];

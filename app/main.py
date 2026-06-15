@@ -1138,12 +1138,14 @@ def hands_status():
 
     head = hands.latest_head()
     with conn() as db:
-        n_bad = db.execute("SELECT count(*) AS n FROM hand_labels WHERE label=0").fetchone()["n"]
+        counts = {r["label"]: r["n"] for r in db.execute(
+            "SELECT label, count(*) AS n FROM hand_labels GROUP BY label")}
         n_scored = db.execute("SELECT count(*) AS n FROM hand_scores").fetchone()["n"]
     return {"has_model": bool(head),
             "metrics": head.get("metrics") if head else None,
             "model": head.get("name") if head else None,
-            "bad_labels": n_bad, "scored": n_scored}
+            "good_labels": counts.get(1, 0), "bad_labels": counts.get(0, 0),
+            "none_labels": counts.get(-1, 0), "scored": n_scored}
 
 
 @app.post("/api/hands/train")
@@ -1184,6 +1186,53 @@ def hands_mark(body: MarkHandsIn):
             ph = ",".join("?" * len(body.image_ids))
             db.execute(f"DELETE FROM hand_labels WHERE image_id IN ({ph})", body.image_ids)
     return {"marked": len(body.image_ids), "bad": body.bad}
+
+
+_HAND_QUEUE_ORDER = {
+    "uncertain": "ABS(h.score - 0.5)",          # active learning — the boundary
+    "worst": "h.score",                          # review the flagged ones
+    "best": "h.score DESC",
+    "newest": "i.id DESC",
+}
+
+
+@app.get("/api/hands/queue")
+def hands_queue(limit: int = 40, mode: str = "uncertain"):
+    """Anime images with detected hands, not yet hand-rated, for the rating flow."""
+    order = _HAND_QUEUE_ORDER.get(mode)
+    if order is None:
+        raise HTTPException(422, f"mode must be one of {sorted(_HAND_QUEUE_ORDER)}")
+    with conn() as db:
+        rows = db.execute(
+            f"""SELECT i.id, h.score, h.n_hands FROM hand_scores h
+                JOIN images i ON i.id = h.image_id
+                WHERE NOT EXISTS (SELECT 1 FROM hand_labels hl WHERE hl.image_id = i.id)
+                ORDER BY {order} LIMIT ?""", (limit,)).fetchall()
+    return {"items": [dict(r) for r in rows]}
+
+
+class RateHandIn(BaseModel):
+    image_id: int
+    value: str = Field(pattern="^(good|bad|none|clear)$")
+
+
+@app.post("/api/hands/rate")
+def hands_rate(body: RateHandIn):
+    """Rate one image's hands. good/bad/none feed training; 'none' (no hands)
+    also drops its score so it leaves the bad-hands views and the queue."""
+    label = {"good": 1, "bad": 0, "none": -1}.get(body.value)
+    with conn() as db:
+        _require_images(db, [body.image_id])
+        if body.value == "clear":
+            db.execute("DELETE FROM hand_labels WHERE image_id = ?", (body.image_id,))
+        else:
+            db.execute(
+                "INSERT INTO hand_labels (image_id, label, source) VALUES (?, ?, 'rate')"
+                " ON CONFLICT(image_id) DO UPDATE SET label = excluded.label",
+                (body.image_id, label))
+            if label == -1:
+                db.execute("DELETE FROM hand_scores WHERE image_id = ?", (body.image_id,))
+    return {"ok": True}
 
 
 # Experimental hand-quality probe: serve detected hand crops + manifest for the

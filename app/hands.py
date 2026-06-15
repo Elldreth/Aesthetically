@@ -92,11 +92,17 @@ def latest_head() -> dict | None:
 
 
 def _good_query():
+    # good = liked anime (the 'liked => good hands' rule) OR explicitly rated good,
+    # minus anything rated bad. Excludes near-dups.
     return ("SELECT i.id, s.location FROM images i"
-            " JOIN current_labels c ON c.image_id=i.id AND c.kind='binary' AND c.value=1.0"
             " JOIN image_styles st ON st.image_id=i.id AND st.style='anime'"
             " JOIN image_sources s ON s.image_id=i.id AND s.kind='local'"
             " WHERE NOT EXISTS (SELECT 1 FROM near_dups d WHERE d.image_id=i.id)"
+            " AND NOT EXISTS (SELECT 1 FROM hand_labels hb WHERE hb.image_id=i.id AND hb.label=0)"
+            " AND ("
+            "   EXISTS (SELECT 1 FROM current_labels c WHERE c.image_id=i.id"
+            "           AND c.kind='binary' AND c.value=1.0)"
+            "   OR EXISTS (SELECT 1 FROM hand_labels hg WHERE hg.image_id=i.id AND hg.label=1))"
             " GROUP BY i.id")
 
 
@@ -181,6 +187,7 @@ def score_all(progress: dict | None = None, cancel=None, limit: int | None = Non
             " JOIN image_styles st ON st.image_id=i.id AND st.style='anime'"
             " JOIN image_sources s ON s.image_id=i.id AND s.kind='local'"
             " WHERE NOT EXISTS (SELECT 1 FROM near_dups d WHERE d.image_id=i.id)"
+            " AND NOT EXISTS (SELECT 1 FROM hand_labels hl WHERE hl.image_id=i.id AND hl.label=-1)"
             " GROUP BY i.id" + (f" LIMIT {int(limit)}" if limit else "")).fetchall()
     if progress is not None:
         progress.update(phase="scoring", total=len(rows), done=0)
