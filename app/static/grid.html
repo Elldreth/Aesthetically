@@ -77,6 +77,12 @@
     <div class="group" title="Remove junk (depth maps, etc.) from the queue and training">
       <button class="btn" id="b-remove" disabled>Remove</button>
       <button class="btn" id="b-restore" disabled>Restore</button>
+      <select id="dedupe-level" aria-label="Duplicate match sensitivity"
+              title="How alike images must be to count as duplicates">
+        <option value="0">Exact</option>
+        <option value="5" selected>Near (resolution/format twins)</option>
+        <option value="8">Loose (very similar)</option>
+      </select>
       <button class="btn" id="b-dedupe" title="Find near-identical images and remove all but one of each (reversible)">Remove duplicates</button>
       <span class="badge" id="dedupe-badge" hidden></span>
     </div>
@@ -244,7 +250,7 @@ async function dedupe() {
   btn.disabled = true; btn.textContent = 'Scanning…';
   setDedupeBadge('busy', 'Scanning…');   // immediate feedback, persists until result
   try {
-    const { job_id } = await api('/api/dedupe', {});
+    const { job_id } = await api('/api/dedupe', {phash_dist: +$('dedupe-level').value});
     let job;
     while (true) {                        // poll right away so fast runs still register
       job = await api(`/api/jobs/${job_id}`);

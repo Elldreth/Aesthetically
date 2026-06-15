@@ -170,16 +170,24 @@ def remove_duplicates(progress: dict | None = None, cancel=None,
         if progress is not None:
             progress["phase"] = "grouping"
         find_groups(db, phash_dist, None)
-        # Non-canonical members not already removed.
-        ids = [r["image_id"] for r in db.execute(
-            "SELECT d.image_id FROM near_dups d"
-            " WHERE NOT EXISTS (SELECT 1 FROM current_labels c"
-            "   WHERE c.image_id = d.image_id AND c.kind = 'exclude' AND c.value = 1)"
-            " ORDER BY d.image_id"
-        ).fetchall()]
-        groups = db.execute(
-            "SELECT COUNT(DISTINCT canonical_id) AS g FROM near_dups"
-        ).fetchone()["g"]
+        # Reconstruct each group's full membership (canonical + its members) and
+        # keep the lowest-id image that is still present, excluding the rest.
+        # Choosing the keeper among NON-excluded members guarantees a surviving
+        # copy even if the lowest id was already removed (manually or earlier).
+        excluded = {r["image_id"] for r in db.execute(
+            "SELECT image_id FROM current_labels WHERE kind = 'exclude' AND value = 1"
+        ).fetchall()}
+        members: dict[int, set[int]] = {}
+        for r in db.execute("SELECT image_id, canonical_id FROM near_dups").fetchall():
+            members.setdefault(r["canonical_id"], {r["canonical_id"]}).add(r["image_id"])
+        ids: list[int] = []
+        for grp in members.values():
+            survivors = sorted(g for g in grp if g not in excluded)
+            if len(survivors) <= 1:
+                continue  # already down to one (or zero) copy — nothing to remove
+            ids.extend(survivors[1:])  # keep survivors[0], remove the rest
+        ids.sort()
+        groups = len(members)
         if progress is not None:
             progress.update(phase="removing", total=len(ids), done=0)
         db.executemany(

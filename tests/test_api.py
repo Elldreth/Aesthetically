@@ -143,3 +143,33 @@ def test_remove_duplicates_excludes_non_canonical(tmp_db, tmp_path):
     # Idempotent: re-running removes nothing new (ib already excluded).
     again = dedupe.remove_duplicates(phash_dist=0)
     assert again["removed"] == 0 and again["groups"] == 1
+
+
+def test_remove_duplicates_keeps_a_surviving_copy(tmp_db, tmp_path):
+    """If the lowest-id member was already removed, the keeper falls through to
+    the next surviving copy — the group must never be fully excluded."""
+    from app import dedupe
+
+    a, b, c = (tmp_path / "a.png", tmp_path / "b.png", tmp_path / "c.png")
+    _patterned_png(a, 7)
+    _patterned_png(b, 7)
+    _patterned_png(c, 7)  # three identical copies
+
+    db = get_conn()
+    ia = add_image(db, "1", path=str(a))
+    ib = add_image(db, "2", path=str(b))
+    ic = add_image(db, "3", path=str(c))
+    # ia (lowest id) is already removed, e.g. manually.
+    db.execute("INSERT INTO labels (image_id, kind, value, source)"
+               " VALUES (?, 'exclude', 1, 'manual')", (ia,))
+    db.commit()
+    db.close()
+
+    out = dedupe.remove_duplicates(phash_dist=0)
+    assert out["removed_ids"] == [ic]  # keep ib (lowest survivor), remove ic
+
+    db = get_conn()
+    excluded = {r["image_id"] for r in db.execute(
+        "SELECT image_id FROM current_labels WHERE kind='exclude' AND value=1")}
+    db.close()
+    assert excluded == {ia, ic}  # ib survives — group is not wiped out
