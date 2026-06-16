@@ -447,6 +447,18 @@ function _openScanFolder() {
   input.placeholder = 'D:\\new-images  or  \\\\server\\share\\folder';
   input.style.width = '100%';
   input.setAttribute('aria-label', 'Folder path');
+  const styleRow = document.createElement('label');
+  styleRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin-top:10px;font-size:13px';
+  const styleLabel = document.createElement('span');
+  styleLabel.style.cssText = 'color:var(--text-dim)';
+  styleLabel.textContent = 'score as';
+  const styleSel = document.createElement('select');
+  for (const [v, t] of [['anime', 'anime'], ['realistic', 'realistic'], ['', 'latest model']]) {
+    const o = document.createElement('option'); o.value = v; o.textContent = t;
+    styleSel.appendChild(o);
+  }
+  styleRow.title = 'Which taste model to use — pick the style that matches this folder';
+  styleRow.append(styleLabel, styleSel);
   const row = document.createElement('div');
   row.style.cssText = 'display:flex;gap:8px;margin-top:12px;justify-content:flex-end';
   const cancel = document.createElement('button');
@@ -461,7 +473,7 @@ function _openScanFolder() {
     if (!path) return;
     go.disabled = true;
     try {
-      await api('/api/scan', { path });
+      await api('/api/scan', { path, ...(styleSel.value ? { style: styleSel.value } : {}) });
       location.href = '/static/scan.html';
     } catch (e) {
       go.disabled = false;
@@ -470,7 +482,7 @@ function _openScanFolder() {
   });
   input.addEventListener('keydown', e => { if (e.key === 'Enter') go.click(); });
   row.append(cancel, go);
-  panel.append(h, p, input, row);
+  panel.append(h, p, input, styleRow, row);
   backdrop.appendChild(panel);
   document.body.appendChild(backdrop);
   input.focus();

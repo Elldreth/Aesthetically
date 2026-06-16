@@ -864,6 +864,7 @@ def _latest_scan_id(db) -> int | None:
 
 class ScanIn(BaseModel):
     path: str = Field(min_length=1, max_length=500)
+    style: str | None = Field(default=None, pattern="^(anime|realistic)$")
 
 
 @app.post("/api/scan")
@@ -875,7 +876,9 @@ def scan_folder(body: ScanIn):
     folder = _clean_path(body.path)
     if not folder.is_dir():
         raise HTTPException(422, _NOT_A_FOLDER_MSG)
-    head = latest_head()
+    # Score with the chosen style's model (you know the folder's contents);
+    # falls back to the most-recently-trained head when no style is given.
+    head = latest_head(body.style) or latest_head()
     if head is None:
         raise HTTPException(409, "no taste model yet — rate and train first")
     with conn() as db:
