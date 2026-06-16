@@ -797,11 +797,13 @@ def dedupe_remove(body: DedupeIn):
 class IngestFolderIn(BaseModel):
     path: str = Field(min_length=1, max_length=500)
     recursive: bool = True
+    style: str | None = Field(default=None, pattern="^(anime|realistic|unknown)$")
 
 
 @app.post("/api/ingest_folder")
 def ingest_folder(body: IngestFolderIn):
-    """Register a folder (read-only), then hash/embed/score — queued as a job."""
+    """Register a folder (read-only), then hash/embed/score — queued as a job.
+    style anime/realistic tags the folder manually; 'unknown' auto-classifies."""
     from .ingest import run_folder_ingest
 
     folder = _clean_path(body.path)
@@ -810,7 +812,7 @@ def ingest_folder(body: IngestFolderIn):
     job = jobs.submit(
         "ingest", str(folder),
         lambda progress, cancel: run_folder_ingest(
-            folder, progress, recursive=body.recursive, cancel=cancel),
+            folder, progress, recursive=body.recursive, style=body.style, cancel=cancel),
     )
     return {"started": True, "job_id": job.id}
 

@@ -176,11 +176,15 @@ def iter_image_files(folder: Path, recursive: bool = True) -> list[Path]:
 
 
 def run_folder_ingest(folder: Path, progress: dict, *, recursive: bool = True,
-                      post_steps: bool = True, cancel=None) -> None:
+                      post_steps: bool = True, style: str | None = None,
+                      cancel=None) -> None:
     """Register every image in a folder (read-only — files stay in place),
     then run the post-pipeline so new images arrive scored: phash → embed →
     score with the latest taste head. progress is mutated for status polling
     (phase / done / total); cancel is an optional threading.Event.
+
+    ``style`` tags the folder's images: 'anime'/'realistic' sets it manually;
+    'unknown' (or None with auto) leaves the SigLIP classifier to decide.
 
     post_steps=False skips the GPU pipeline (tests, or embed-later flows).
     """
@@ -191,6 +195,7 @@ def run_folder_ingest(folder: Path, progress: dict, *, recursive: bool = True,
     progress.update(total=len(files), done=0, added=0, phase="registering")
     from .db import get_conn
 
+    touched: list[int] = []
     db = get_conn()
     try:
         for n, f in enumerate(files, 1):
@@ -225,6 +230,7 @@ def run_folder_ingest(folder: Path, progress: dict, *, recursive: bool = True,
                    ON CONFLICT (image_id, location) DO UPDATE SET last_verified = datetime('now')""",
                 (image_id, str(f.resolve())),
             )
+            touched.append(image_id)
             progress["done"] = n
             if n % 50 == 0:
                 db.commit()
@@ -251,6 +257,17 @@ def run_folder_ingest(folder: Path, progress: dict, *, recursive: bool = True,
         if not cancelled():
             progress.update(phase="scoring", done=0, total=0)
             _score_unscored(progress)
+
+    # Style tagging for the folder: explicit (manual) or classifier ('unknown').
+    if style and not cancelled() and touched:
+        progress.update(phase="styling", done=0, total=len(touched))
+        if style in ("anime", "realistic"):
+            from .styles import set_style
+            set_style(list(dict.fromkeys(touched)), style)
+        elif style == "unknown":
+            from .styles import classify_styles
+            classify_styles(progress=progress, cancel=cancel)
+
     progress["phase"] = "cancelled" if cancelled() else "done"
     return {"added": progress.get("added", 0), "scored": progress.get("scored", 0)}
 

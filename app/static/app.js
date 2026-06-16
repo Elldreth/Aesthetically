@@ -391,6 +391,19 @@ function _openAddFolder() {
   input.placeholder = 'D:\\images  or  \\\\server\\share\\folder';
   input.style.width = '100%';
   input.setAttribute('aria-label', 'Folder path');
+  const styleRow = document.createElement('label');
+  styleRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin-top:10px;font-size:13px';
+  const styleLabel = document.createElement('span');
+  styleLabel.style.cssText = 'color:var(--text-dim)';
+  styleLabel.textContent = 'style';
+  const styleSel = document.createElement('select');
+  for (const [v, t] of [['unknown', 'unknown (let the model decide)'],
+                        ['anime', 'anime'], ['realistic', 'realistic']]) {
+    const o = document.createElement('option'); o.value = v; o.textContent = t;
+    styleSel.appendChild(o);
+  }
+  styleRow.title = 'Tag this folder’s style. Anime/realistic set it manually; unknown auto-classifies.';
+  styleRow.append(styleLabel, styleSel);
   const row = document.createElement('div');
   row.style.cssText = 'display:flex;gap:8px;margin-top:12px;justify-content:flex-end';
   const cancel = document.createElement('button');
@@ -405,7 +418,7 @@ function _openAddFolder() {
     if (!path) return;
     go.disabled = true;
     try {
-      await api('/api/ingest_folder', { path });
+      await api('/api/ingest_folder', { path, style: styleSel.value });
       backdrop.remove();
       toast('Folder queued — open Jobs to watch progress');
       _jobsPoll(true);
@@ -416,7 +429,7 @@ function _openAddFolder() {
   });
   input.addEventListener('keydown', e => { if (e.key === 'Enter') go.click(); });
   row.append(cancel, go);
-  panel.append(h, p, input, row);
+  panel.append(h, p, input, styleRow, row);
   backdrop.appendChild(panel);
   document.body.appendChild(backdrop);
   input.focus();
