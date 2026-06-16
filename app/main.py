@@ -889,7 +889,7 @@ def scan_folder(body: ScanIn):
         scan_id = cur.lastrowid
     jobs.submit(
         "scan", str(folder),
-        lambda progress, cancel: run_scan(folder, scan_id, progress, cancel=cancel),
+        lambda progress, cancel: run_scan(folder, scan_id, progress, cancel=cancel, head=head),
     )
     return {"started": True, "scan_id": scan_id}
 

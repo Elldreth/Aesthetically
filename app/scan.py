@@ -42,10 +42,13 @@ def _decode_downscaled(data: bytes) -> Image.Image:
 
 
 def run_scan(folder: Path, scan_id: int, progress: dict, *,
-             recursive: bool = True, cancel=None) -> list[dict]:
+             recursive: bool = True, cancel=None, head: dict | None = None) -> list[dict]:
     """Score every image in a folder, caching embeddings by content hash and
-    persisting results under scan_id. Mutates progress for status polling."""
-    head = latest_head()
+    persisting results under scan_id. Mutates progress for status polling.
+
+    ``head`` is the taste head to score with (the caller picks it by style);
+    falls back to the latest-trained head for the CLI path."""
+    head = head or latest_head()
     if head is None:
         raise RuntimeError("no trained taste model yet")
     coef = np.array(head["coef"], dtype=np.float32)
