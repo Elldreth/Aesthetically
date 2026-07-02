@@ -103,6 +103,25 @@ def test_ingest_endpoint_dedup_and_label(client):
     assert bad.status_code == 422
 
 
+def test_folder_ingest_tags_style(tmp_db, tmp_path):
+    """Add Folder with style='anime' tags the folder's images manually."""
+    from app.ingest import run_folder_ingest
+
+    folder = tmp_path / "anime_pics"
+    folder.mkdir()
+    for i in range(3):
+        (folder / f"img{i}.png").write_bytes(png_bytes(color=(i * 40, 30, 90)))
+    run_folder_ingest(folder, {}, post_steps=False, style="anime")
+
+    db = get_conn()
+    rows = db.execute(
+        "SELECT style, source, count(*) AS n FROM image_styles GROUP BY style, source"
+    ).fetchall()
+    db.close()
+    assert len(rows) == 1
+    assert rows[0]["style"] == "anime" and rows[0]["source"] == "manual" and rows[0]["n"] == 3
+
+
 def _patterned_png(path, seed):
     """A textured (non-flat) PNG so phash discriminates — flat colors all hash
     to the same value and would falsely group as duplicates."""

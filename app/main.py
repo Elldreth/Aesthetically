@@ -797,11 +797,13 @@ def dedupe_remove(body: DedupeIn):
 class IngestFolderIn(BaseModel):
     path: str = Field(min_length=1, max_length=500)
     recursive: bool = True
+    style: str | None = Field(default=None, pattern="^(anime|realistic|unknown)$")
 
 
 @app.post("/api/ingest_folder")
 def ingest_folder(body: IngestFolderIn):
-    """Register a folder (read-only), then hash/embed/score — queued as a job."""
+    """Register a folder (read-only), then hash/embed/score — queued as a job.
+    style anime/realistic tags the folder manually; 'unknown' auto-classifies."""
     from .ingest import run_folder_ingest
 
     folder = _clean_path(body.path)
@@ -810,7 +812,7 @@ def ingest_folder(body: IngestFolderIn):
     job = jobs.submit(
         "ingest", str(folder),
         lambda progress, cancel: run_folder_ingest(
-            folder, progress, recursive=body.recursive, cancel=cancel),
+            folder, progress, recursive=body.recursive, style=body.style, cancel=cancel),
     )
     return {"started": True, "job_id": job.id}
 
@@ -864,6 +866,7 @@ def _latest_scan_id(db) -> int | None:
 
 class ScanIn(BaseModel):
     path: str = Field(min_length=1, max_length=500)
+    style: str | None = Field(default=None, pattern="^(anime|realistic)$")
 
 
 @app.post("/api/scan")
@@ -875,7 +878,9 @@ def scan_folder(body: ScanIn):
     folder = _clean_path(body.path)
     if not folder.is_dir():
         raise HTTPException(422, _NOT_A_FOLDER_MSG)
-    head = latest_head()
+    # Score with the chosen style's model (you know the folder's contents);
+    # falls back to the most-recently-trained head when no style is given.
+    head = latest_head(body.style) or latest_head()
     if head is None:
         raise HTTPException(409, "no taste model yet — rate and train first")
     with conn() as db:
@@ -886,7 +891,7 @@ def scan_folder(body: ScanIn):
         scan_id = cur.lastrowid
     jobs.submit(
         "scan", str(folder),
-        lambda progress, cancel: run_scan(folder, scan_id, progress, cancel=cancel),
+        lambda progress, cancel: run_scan(folder, scan_id, progress, cancel=cancel, head=head),
     )
     return {"started": True, "scan_id": scan_id}
 
